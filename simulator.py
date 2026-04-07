@@ -18,7 +18,6 @@ Physical Review Letters, 96(20), 208701.
 
 import numpy as np
 
-
 def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=None):
     """Run one replicate of the adaptive-network SIR model.
 
@@ -68,7 +67,8 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         degree_histogram[30] counts all nodes with degree >= 30.
     """
     if rng is None:
-        rng = np.random.default_rng()
+        seed = 2026
+        rng = np.random.default_rng(seed)
 
     # =====================================================================
     # STEP 0: Build the initial contact network as an Erdos-Renyi graph.
@@ -81,6 +81,7 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
     # For each pair (i, j) with i < j, we add an edge with probability
     # p_edge. This produces an undirected graph (if i is connected to j,
     # then j is also connected to i).
+    # NOTE (CY): adjacency list builts the network graph, using 'neighbours' for easy understanding
     # =====================================================================
     neighbors = [set() for _ in range(N)]
     for i in range(N):
@@ -88,7 +89,7 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
             if rng.random() < p_edge:
                 neighbors[i].add(j)
                 neighbors[j].add(i)
-
+    
     # =====================================================================
     # Initialize the health state of each node.
     #
@@ -99,15 +100,24 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
     #
     # At t=0, we pick n_infected0 nodes uniformly at random to be infected.
     # All other nodes start as susceptible.
+    #
+    # NOTE (CY): health state is dependent on parameter 'n_infected0'
     # =====================================================================
     state = np.zeros(N, dtype=np.int8)
+    
+    # NOTE (CY): chooses between np.arange(N), ranging from [0, N), n_infected0 times without replacement
     initial_infected = rng.choice(N, size=n_infected0, replace=False)
     state[initial_infected] = 1
-
+    
     # Arrays to record the summary statistics at each time step
+    # NOTE (CY): time 0 to time T contains T+1 timepoints
     infected_fraction = np.zeros(T + 1)
     rewire_counts = np.zeros(T + 1, dtype=np.int64)
-    infected_fraction[0] = np.sum(state == 1) / N
+
+    # NOTE (CY): infected_fraction contains percentage infected at time i from 0 to T
+    infected_fraction[0] = np.count_nonzero(state == 1) / N
+    # # print(infected_fraction)
+    # # print(state)
 
     # =================================================================
     # Main simulation loop: iterate over T discrete time steps.
@@ -133,12 +143,13 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         # =============================================================
         new_infections = set()
         infected_nodes = np.where(state == 1)[0]
-
         for i in infected_nodes:
             for j in neighbors[i]:
                 if state[j] == 0:  # j is susceptible
                     if rng.random() < beta:
                         new_infections.add(j)
+                        # # print(neighbors)
+                        # # print(new_infections)
 
         # Apply all new infections at once (synchronous update)
         for j in new_infections:
@@ -155,9 +166,10 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         # We recompute the infected set to include newly infected nodes.
         # =============================================================
         infected_nodes = np.where(state == 1)[0]
-        for i in infected_nodes:
-            if rng.random() < gamma:
-                state[i] = 2
+        if infected_nodes.size > 0:
+            recovery_mask = rng.random(infected_nodes.size) < gamma
+            recovered_nodes = infected_nodes[recovery_mask]
+            state[recovered_nodes] = 2
 
         # =============================================================
         # PHASE 3: NETWORK REWIRING (adaptive behavior)
@@ -199,25 +211,21 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
                 neighbors[s_node].discard(i_node)
                 neighbors[i_node].discard(s_node)
 
-                # Find all valid candidates for a new connection:
-                # any node that is not s_node itself and not already
-                # a neighbor of s_node. Note that the new partner can
-                # be in any state (S, I, or R).
-                candidates = []
-                for k in range(N):
-                    if k != s_node and k not in neighbors[s_node]:
-                        candidates.append(k)
+                # Pick a new partner uniformly from all valid non-neighbors
+                # using rejection sampling to avoid rebuilding candidate lists.
+                if N <= 1:
+                    continue
+                while True:
+                    new_partner = int(rng.integers(N))
+                    if new_partner != s_node and new_partner not in neighbors[s_node]:
+                        break
 
-                # If there is at least one valid candidate, pick one
-                # uniformly at random and create the new edge
-                if candidates:
-                    new_partner = rng.choice(candidates)
-                    neighbors[s_node].add(new_partner)
-                    neighbors[new_partner].add(s_node)
-                    rewire_count += 1
+                neighbors[s_node].add(new_partner)
+                neighbors[new_partner].add(s_node)
+                rewire_count += 1
 
         # Record summary statistics for this time step
-        infected_fraction[t] = np.sum(state == 1) / N
+        infected_fraction[t] = np.count_nonzero(state == 1) / N
         rewire_counts[t] = rewire_count
 
     # =====================================================================
@@ -228,9 +236,14 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
     # into a single bin (index 30). This gives a fixed-size output array
     # of shape (31,) regardless of the actual degree distribution.
     # =====================================================================
-    degree_histogram = np.zeros(31, dtype=np.int64)
-    for i in range(N):
-        deg = min(len(neighbors[i]), 30)
-        degree_histogram[deg] += 1
+    degree_values = np.fromiter((len(nei) for nei in neighbors), dtype=np.int64, count=N)
+    degree_histogram = np.bincount(np.minimum(degree_values, 30), minlength=31).astype(np.int64, copy=False)
 
     return infected_fraction, rewire_counts, degree_histogram
+
+# infected_fraction, rewire_counts, degree_histogram = simulate(beta=0.3, gamma=0.1, rho=0.5)
+# print(infected_fraction)
+# print('\n')
+# print(rewire_counts)
+# print('\n')
+# print(degree_histogram)
