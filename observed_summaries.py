@@ -1,3 +1,48 @@
+"""
+Observed Summary Statistics for the Adaptive-Network SIR Model
+
+Date: 2026-04-10
+
+Description
+-----------
+This module computes the observed summary statistics used by the ABC inference
+scripts from the empirical epidemic and network datasets stored in `data/`.
+
+The workflow:
+1. Load the observed infection, rewiring, and degree-histogram datasets
+2. Clean and reshape the raw tables when needed
+3. Compute six observed summary statistics
+4. Return them in the same order used by the simulation-based ABC scripts
+
+Key Design Choices
+------------------
+- Data sources:
+    `infected_timeseries.csv`, `rewiring_timeseries.csv`,
+    `final_degree_histograms.csv`
+
+- Summary statistics:
+    * Max infection fraction
+    * Time to peak
+    * Early infection growth rate
+    * Early rewiring growth rate
+    * Degree variance
+    * Late infection decay rate
+
+- Main interface:
+    `get_obs_summaries()`
+
+Outputs
+-------
+- Ordered list of observed summary statistics for ABC matching
+
+Notes
+-----
+- The ordering of summaries must remain consistent with `abc_rejection.py`
+  and `abc_mcmc.py`.
+- This module provides the observed-data counterpart to the simulated summaries
+  produced during inference.
+"""
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt

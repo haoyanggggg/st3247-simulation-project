@@ -14,11 +14,19 @@ The model proceeds in discrete time steps, each with three phases:
 
 Reference: Gross et al. (2006), "Epidemic dynamics on an adaptive network",
 Physical Review Letters, 96(20), 208701.
+
+NOTE (MAIN SPEEDUPS):
+1. (CY) Added 'simulation_context' argument so that precomputed graph index arrays 
+        can be reused across many ABC simulations instead of rebuilt every call.
+2. (CY) Replaced initial graph generation using np.triu_indices plus a single random mask. 
+3. (CY) Final degree histogram construction is vectorized using np.fromiter and 
+        np.bincount, replacing a Python loop.
+
 """
 
 import numpy as np
 
-def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=None):
+def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=None, simulation_context=None):
     """Run one replicate of the adaptive-network SIR model.
 
     Parameters
@@ -52,6 +60,12 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         Random number generator for reproducibility. If None, a new
         generator is created with an arbitrary seed. Pass
         np.random.default_rng(seed) for reproducible runs.
+    simulation_context : dict or None
+        Optional cache of simulation-invariant structures precomputed
+        outside this function. Expected keys:
+          - "upper_rows": np.ndarray of row indices from np.triu_indices(N, k=1)
+          - "upper_cols": np.ndarray of col indices from np.triu_indices(N, k=1)
+        If None, these are constructed inside the function.
 
     Returns
     -------
@@ -67,8 +81,7 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         degree_histogram[30] counts all nodes with degree >= 30.
     """
     if rng is None:
-        seed = 2026
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(2026)
 
     # =====================================================================
     # STEP 0: Build the initial contact network as an Erdos-Renyi graph.
@@ -84,11 +97,17 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
     # NOTE (CY): adjacency list builts the network graph, using 'neighbours' for easy understanding
     # =====================================================================
     neighbors = [set() for _ in range(N)]
-    for i in range(N):
-        for j in range(i + 1, N):
-            if rng.random() < p_edge:
-                neighbors[i].add(j)
-                neighbors[j].add(i)
+    if simulation_context is not None:
+        upper_rows = simulation_context["upper_rows"]
+        upper_cols = simulation_context["upper_cols"]
+    else:
+        upper_rows, upper_cols = np.triu_indices(N, k=1)
+    edge_mask = rng.random(upper_rows.size) < p_edge
+    edge_rows = upper_rows[edge_mask]
+    edge_cols = upper_cols[edge_mask]
+    for i, j in zip(edge_rows, edge_cols):
+        neighbors[i].add(int(j))
+        neighbors[j].add(int(i))
     
     # =====================================================================
     # Initialize the health state of each node.
@@ -127,6 +146,11 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
     #   Phase 3: Rewiring  (network topology changes)
     # =================================================================
     for t in range(1, T + 1):
+        infected_nodes = np.flatnonzero(state == 1)
+
+        # If no infected nodes remain, the epidemic is over.
+        if infected_nodes.size == 0:
+            break
 
         # =============================================================
         # PHASE 1: INFECTION (synchronous update)
@@ -142,18 +166,20 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         # neighbors in the same step).
         # =============================================================
         new_infections = set()
-        infected_nodes = np.where(state == 1)[0]
         for i in infected_nodes:
-            for j in neighbors[i]:
-                if state[j] == 0:  # j is susceptible
-                    if rng.random() < beta:
-                        new_infections.add(j)
-                        # # print(neighbors)
-                        # # print(new_infections)
+            susceptible_neighbors = [j for j in neighbors[i] if state[j] == 0]
+            if not susceptible_neighbors:
+                continue
+            infection_mask = rng.random(len(susceptible_neighbors)) < beta
+            if np.any(infection_mask):
+                selected_neighbors = np.asarray(susceptible_neighbors, dtype=np.int64)[infection_mask]
+                new_infections.update(selected_neighbors.tolist())
+                # # print(neighbors)
+                # # print(new_infections)
 
         # Apply all new infections at once (synchronous update)
-        for j in new_infections:
-            state[j] = 1
+        if new_infections:
+            state[list(new_infections)] = 1
 
         # =============================================================
         # PHASE 2: RECOVERY
@@ -165,7 +191,7 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         #
         # We recompute the infected set to include newly infected nodes.
         # =============================================================
-        infected_nodes = np.where(state == 1)[0]
+        infected_nodes = np.flatnonzero(state == 1)
         if infected_nodes.size > 0:
             recovery_mask = rng.random(infected_nodes.size) < gamma
             recovered_nodes = infected_nodes[recovery_mask]
@@ -192,37 +218,45 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
         # First, collect all S-I edges. We iterate over susceptible
         # nodes and check their neighbors for infected ones.
         si_edges = []
-        for i in range(N):
-            if state[i] == 0:  # node i is susceptible
-                for j in neighbors[i]:
-                    if state[j] == 1:  # neighbor j is infected
-                        si_edges.append((i, j))
+        if rho > 0.0:
+            infected_nodes = np.flatnonzero(state == 1)
+            for i_node in infected_nodes:
+                for s_node in neighbors[i_node]:
+                    if state[s_node] == 0:
+                        si_edges.append((s_node, i_node))
 
         # Process each S-I edge for potential rewiring
-        for s_node, i_node in si_edges:
-            if rng.random() < rho:
-                # Check that this edge still exists. An earlier rewiring
-                # in this same loop may have already removed it (since
-                # rewiring can affect shared neighborhoods).
-                if i_node not in neighbors[s_node]:
-                    continue
+        if si_edges:
+            do_rewire_mask = rng.random(len(si_edges)) < rho
+        else:
+            do_rewire_mask = np.empty(0, dtype=bool)
 
-                # Remove the S-I edge (break the link in both directions)
-                neighbors[s_node].discard(i_node)
-                neighbors[i_node].discard(s_node)
+        for (s_node, i_node), should_rewire in zip(si_edges, do_rewire_mask):
+            if not should_rewire:
+                continue
 
-                # Pick a new partner uniformly from all valid non-neighbors
-                # using rejection sampling to avoid rebuilding candidate lists.
-                if N <= 1:
-                    continue
-                while True:
-                    new_partner = int(rng.integers(N))
-                    if new_partner != s_node and new_partner not in neighbors[s_node]:
-                        break
+            # Check that this edge still exists. An earlier rewiring
+            # in this same loop may have already removed it (since
+            # rewiring can affect shared neighborhoods).
+            if i_node not in neighbors[s_node]:
+                continue
 
-                neighbors[s_node].add(new_partner)
-                neighbors[new_partner].add(s_node)
-                rewire_count += 1
+            # Remove the S-I edge (break the link in both directions)
+            neighbors[s_node].discard(i_node)
+            neighbors[i_node].discard(s_node)
+
+            # Pick a new partner uniformly from all valid non-neighbors
+            # using rejection sampling to avoid rebuilding candidate lists.
+            if N <= 1:
+                continue
+            while True:
+                new_partner = int(rng.integers(N))
+                if new_partner != s_node and new_partner not in neighbors[s_node]:
+                    break
+
+            neighbors[s_node].add(new_partner)
+            neighbors[new_partner].add(s_node)
+            rewire_count += 1
 
         # Record summary statistics for this time step
         infected_fraction[t] = np.count_nonzero(state == 1) / N
@@ -240,10 +274,3 @@ def simulate(beta, gamma, rho, N=200, p_edge=0.05, n_infected0=5, T=200, rng=Non
     degree_histogram = np.bincount(np.minimum(degree_values, 30), minlength=31).astype(np.int64, copy=False)
 
     return infected_fraction, rewire_counts, degree_histogram
-
-# infected_fraction, rewire_counts, degree_histogram = simulate(beta=0.3, gamma=0.1, rho=0.5)
-# print(infected_fraction)
-# print('\n')
-# print(rewire_counts)
-# print('\n')
-# print(degree_histogram)
