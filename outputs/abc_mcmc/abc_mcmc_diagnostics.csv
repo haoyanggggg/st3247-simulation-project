@@ -1,0 +1,11 @@
+metric,value
+summary_set,Reduced set E
+reference_simulations,30000
+reference_accepted_samples,300
+mcmc_iterations,30000
+burn_in,3000
+thinning,1
+acceptance_epsilon,0.01
+distance_threshold,0.40137671481813997
+acceptance_rate,0.1267042234741158
+posterior_sample_size,27000

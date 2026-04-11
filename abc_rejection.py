@@ -1,0 +1,938 @@
+"""
+Approximate Bayesian Computation (ABC) for SIR Epidemic Model with Adaptive Network
+
+Date: 2026-04-07
+
+Description
+-----------
+This script implements the ABC rejection algorithm to infer the posterior 
+distribution of parameters (beta, gamma, rho) in an adaptive SIR epidemic model.
+
+The workflow:
+1. Sample parameters from prior distributions
+2. Simulate epidemic and network dynamics
+3. Compute summary statistics
+4. Standardize summaries
+5. Compute distance between simulated and observed summaries
+6. Accept simulations within a tolerance threshold (ε)
+7. Analyze posterior samples and perform diagnostic checks
+
+Key Design Choices
+------------------
+- Summary statistics:
+    * Max infection fraction
+    * Time to peak
+    * Early infection growth rate
+    * Early rewiring growth rate
+    * Degree variance
+    * Late infection decay rate
+
+- Distance function:
+    Euclidean distance on standardized summaries
+
+- Normalization:
+    Simulation-based mean and standard deviation
+
+- Tolerance:
+    Top 1% closest simulations (ε = 1% quantile)
+
+Outputs
+-------
+- Posterior samples (beta, gamma, rho)
+- Diagnostic plots (posterior predictive checks)
+
+Notes
+-----
+- The posterior is approximate due to non-sufficient summaries and non-zero ε.
+- Results depend on choice of summaries and prior ranges.
+"""
+
+###############
+#
+#
+# 1. IMPORT LIBRARIES
+#
+#
+###############
+import numpy as np
+import pandas as pd
+from simulator import simulate
+from observed_summaries import get_obs_summaries
+from tqdm import tqdm
+from datetime import datetime
+import matplotlib.pyplot as plt
+import os
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+
+###############
+#
+#
+# 2. GLOBAL VARIABLES
+#
+#
+###############
+N = 200
+N_sim = 30_000 # with threshold of 1%, we will have 300 accepted samples for posterior analysis
+degree_counts_max = 30 + 1
+epsilon = 1e-8
+seed = 2026
+# SUMMARY STATISTIC 1: Max infection fraction INFORMS BETA/GAMMA
+# SUMMARY STATISTIC 2: Time to peak INFORMS BETA/GAMMA
+# SUMMARY STATISTIC 3: Early growth rate INFORMS BETA/GAMMA
+# SUMMARY STATISTIC 4: Mean rewire counts during early infection
+# SUMMARY STATISTIC 5: Variance structure of degree counts INFORMS RHO
+#                      ↑rho = distortion from Erdos-Renyi random graph's binomial distribution
+#                      ↓rho = closer to binomial distribution
+# SUMMARY STATISTIC 6: Decay structure of infection INFORMS RHO 
+
+summary_statistics_name = [
+    "Max infection fraction",
+    "Time to peak",
+    "Early growth rate of infection",
+    "Early growth rate of rewiring",
+    "Variance structure of degree counts",
+    "Late decay rate of infection"
+]
+MAX_INFECTION_IDX = 0
+TIME_TO_PEAK_IDX = 1
+EARLY_INFECTION_GROWTH_IDX = 2
+EARLY_REWIRE_COUNT_IDX = 3
+DEGREE_VARIANCE_IDX = 4
+LATE_INFECTION_DECAY_IDX = 5
+
+SUMMARY_SET_INDICES = {
+    "Rich set": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_INFECTION_GROWTH_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+        LATE_INFECTION_DECAY_IDX,
+    ),
+    "Reduced set A": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_INFECTION_GROWTH_IDX,
+        LATE_INFECTION_DECAY_IDX,
+    ),
+    "Reduced set B": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_INFECTION_GROWTH_IDX,
+        LATE_INFECTION_DECAY_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+    ),
+    "Reduced set C": (
+        EARLY_INFECTION_GROWTH_IDX,
+        LATE_INFECTION_DECAY_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+    ),
+    "Reduced set D": (
+        MAX_INFECTION_IDX,
+        LATE_INFECTION_DECAY_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+    ),
+    "Reduced set E": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        LATE_INFECTION_DECAY_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+    ),
+    "Reduced set F": (
+        MAX_INFECTION_IDX,
+        EARLY_INFECTION_GROWTH_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+    ),
+}
+SUMMARY_SET_COMPARISONS = (
+    ("Rich set", "Reduced set A"),
+    ("Rich set", "Reduced set B"),
+    ("Rich set", "Reduced set C"),
+    ("Rich set", "Reduced set D"),
+    ("Rich set", "Reduced set E"),
+    ("Rich set", "Reduced set F"),
+)
+PARAMETER_NAMES = ("beta", "gamma", "rho")
+acceptance_epsilon_list = [0.005, 0.01, 0.03]
+POSTERIOR_COMPARISON_EPSILON = 0.01
+BASE_DIR = Path(__file__).resolve().parent
+BASIC_ABC_DIR = BASE_DIR / "outputs" / "basic_abc"
+SANITY_CHECK_DIR = BASIC_ABC_DIR / "sanity_check"
+PARAM_ESTIMATES_DIR = BASIC_ABC_DIR / "param_estimates"
+SUMMARY_SET_STUDY_DIR = BASIC_ABC_DIR / "summary_set_study"
+REGRESSION_ADJUSTMENT_DIR = BASE_DIR / "data" / "intermediate"
+
+early_time_window_min = 2
+early_time_window_max = 6 + 1
+early_time_points = np.arange(early_time_window_min, early_time_window_max, dtype=np.float64)
+early_time_points_centered = early_time_points - early_time_points.mean()
+early_time_points_denom = np.dot(early_time_points_centered, early_time_points_centered)
+
+late_time_window_min = 13
+late_time_window_max = 20 + 1
+late_time_points = np.arange(late_time_window_min, late_time_window_max, dtype=np.float64)
+late_time_points_centered = late_time_points - late_time_points.mean()
+late_time_points_denom = np.dot(late_time_points_centered, late_time_points_centered)
+
+degrees = np.arange(degree_counts_max, dtype=np.float64)
+
+_WORKER_SIMULATION_CONTEXT = None
+
+###############
+#
+#
+# 3. HELPER FUNCTIONS
+#
+#
+###############
+def build_simulation_context(N: int) -> dict:
+    """
+    Build simulation-invariant structures once and reuse across all runs.
+
+    Parameters
+    ----------
+    N : int
+        Number of nodes in the network.
+
+    Returns
+    -------
+    dict
+        Dictionary containing precomputed structures for `simulate()`.
+    """
+    upper_rows, upper_cols = np.triu_indices(N, k=1)
+    return {
+        "upper_rows": upper_rows,
+        "upper_cols": upper_cols,
+    }
+
+def compute_linear_slope(y_values: np.ndarray, x_centered: np.ndarray, x_denom: float) -> float:
+    """
+    Compute slope of simple linear regression y = a + b*x using precomputed x terms.
+
+    This is algebraically equivalent to np.polyfit(x, y, 1)[0] but faster for
+    fixed x-grids repeatedly reused across simulations.
+    """
+    return float(np.dot(x_centered, y_values) / x_denom)
+
+def _initialize_worker(simulation_context: dict) -> None:
+    """Store shared simulation context in each worker process."""
+    global _WORKER_SIMULATION_CONTEXT
+    _WORKER_SIMULATION_CONTEXT = simulation_context
+
+def _one_simulation_from_seed(seed: int) -> list:
+    """Worker entrypoint for one simulation with an independent RNG seed."""
+    rng = np.random.default_rng(int(seed))
+    return one_simulation(rng=rng, simulation_context=_WORKER_SIMULATION_CONTEXT)
+
+def one_simulation(rng: np.random.Generator, simulation_context: dict) -> list: 
+    """
+    Run a single simulation of the adaptive SIR model and compute summary statistics.
+
+    This function:
+    1. Samples parameters (beta, gamma, rho) from their prior distributions.
+    2. Simulates the epidemic and network dynamics.
+    3. Computes a set of summary statistics used for ABC inference.
+
+    Parameters
+    ----------
+    rng : np.random.Generator
+        Random number generator used for parameter sampling and simulation dynamics.
+    simulation_context : dict
+        Precomputed simulation-invariant structures passed through to `simulate()`.
+
+    Returns
+    -------
+    list
+        A list containing two elements:
+        
+        1. tuple of summary statistics:
+            - max_infection_frac (float):
+                Maximum fraction of infected individuals.
+                Informs the balance between infection (beta) and recovery (gamma).
+            
+            - time_to_peak (int):
+                Time step at which infection reaches its max_infection_frac.
+                Informs infection speed (beta) and recovery dynamics (gamma).
+            
+            - slope_early_infection (float):
+                Slope of log infection fraction during early time window.
+                Approximates early exponential growth rate → strongly informs beta.
+            
+            - slope_rewire (float):
+                Slope of log rewiring counts during early time window.
+                Captures how quickly network adaptation occurs → informs rho.
+            
+            - var_degree (float):
+                Variance of node degree distribution.
+                Captures network heterogeneity → informs rho.
+            
+            - slope_late_infection (float):
+                Slope of log infection fraction during late time window.
+                Captures decay dynamics → informs gamma (and indirectly rho).
+
+        2. tuple of sampled parameters:
+            - beta (float): infection rate
+            - gamma (float): recovery rate
+            - rho (float): rewiring rate
+
+    Notes
+    -----
+    - Log transformations are used to approximate exponential growth/decay.
+    - A small epsilon is added before taking logs to avoid numerical issues with zero values.
+    """
+
+    # Sample parameters from prior distributions
+    beta = rng.uniform(0.05, 0.5)  # Infection rate
+    gamma = rng.uniform(0.02, 0.2) # Recovery rate
+    rho = rng.uniform(0, 0.8)  # Rewiring rate
+
+    # Simulate data using the sampled parameters
+    infected_fraction, rewire_counts, degree_histogram = simulate(beta=beta, gamma=gamma, rho=rho,
+                                                                  rng=rng,
+                                                                  simulation_context=simulation_context)
+    # print(infected_fraction)
+
+    # SUMMARY STATISTIC 1: Max infection fraction INFORMS BETA/GAMMA
+    max_infection_frac = np.max(infected_fraction)
+    # print("Max infection fraction:", max_infection_frac)
+
+    # SUMMARY STATISTIC 2: Time to peak INFORMS BETA/GAMMA
+    time_to_peak = np.argmax(infected_fraction)
+    # print("Time to peak:", time_to_peak)
+
+
+
+    # SUMMARY STATISTIC 3: Early growth rate INFORMS BETA/GAMMA
+    early_log_infection_fraction = np.log(infected_fraction[early_time_window_min:early_time_window_max] + epsilon)  # Add epsilon to avoid log(0)
+    slope_early_infection = compute_linear_slope(early_log_infection_fraction, early_time_points_centered, early_time_points_denom)
+    # print("Early infection growth rate (slope):", slope_early_infection)
+
+    # SUMMARY STATISTIC 4: Mean rewire counts during early infection
+    early_log_rewire_counts = np.log(rewire_counts[early_time_window_min:early_time_window_max] + epsilon)  # Add epsilon to avoid log(0)
+    slope_rewire = compute_linear_slope(early_log_rewire_counts, early_time_points_centered, early_time_points_denom)
+    # print("Early rewire count slope:", slope_rewire)
+
+    # SUMMARY STATISTIC 5: Variance structure of degree counts INFORMS RHO
+    mean_degree = np.sum(degrees * degree_histogram) / N
+    mean_degree_sq = np.sum((degrees**2) * degree_histogram) / N
+
+    var_degree = mean_degree_sq - mean_degree**2
+    # print("Variance of degree counts:", var_degree)
+
+    # SUMMARY STATISTIC 6: Decay structure of infection INFORMS RHO
+    late_log_infection_fraction = np.log(infected_fraction[late_time_window_min:late_time_window_max] + epsilon)  # Add epsilon to avoid log(0)
+    slope_late_infection = compute_linear_slope(late_log_infection_fraction, late_time_points_centered, late_time_points_denom)
+    # print("Late infection decay rate (slope):", slope_late_infection)
+
+    return [
+        (max_infection_frac, time_to_peak, slope_early_infection, 
+            slope_rewire, var_degree, slope_late_infection),
+        (beta, gamma, rho)
+    ]
+
+def scale_summary_statistics(simulated_summary_statistics, observed_summary_statistics):
+    """
+    Standardize simulated and observed summary statistics using simulation-based scaling.
+
+    This function computes the mean and standard deviation of the simulated 
+    summary statistics and uses them to standardize both simulated and observed 
+    summaries. This ensures that all summary statistics contribute comparably 
+    to the distance metric in ABC.
+
+    Parameters
+    ----------
+    simulated_summary_statistics : array-like of shape (N, d)
+        Summary statistics computed from N simulated datasets, where d is the 
+        number of summary statistics.
+
+    observed_summary_statistics : array-like of shape (d,)
+        Summary statistics computed from the observed dataset.
+
+    Returns
+    -------
+    standardized_simulated : ndarray of shape (N, d)
+        Standardized simulated summary statistics.
+
+    standardized_observed : ndarray of shape (d,)
+        Standardized observed summary statistics.
+
+    Notes
+    -----
+    - Standardization is performed as:
+          (S - mu) / sigma
+      where mu and sigma are computed from simulated summaries.
+
+    - Simulation-based scaling is used because only one observed dataset is 
+      available, making it impossible to estimate variability from observed data alone.
+
+    - This scaling approximates a diagonal Mahalanobis distance when used 
+      with Euclidean distance in ABC.
+
+    - If any summary statistic has zero variance (sigma = 0), this may lead 
+      to division by zero and should be handled externally.
+    """
+    simulated_summary_statistics = np.array(simulated_summary_statistics, dtype=np.float64)
+    observed_summary_statistics = np.array(observed_summary_statistics, dtype=np.float64)
+    simulated_mu = simulated_summary_statistics.mean(axis=0)
+    simulated_sigma = simulated_summary_statistics.std(axis=0)
+
+    # If a summary has zero simulation variance, it carries no discrimination
+    # power in distance calculations, so we set its standardized contribution to 0.
+    zero_sigma_mask = simulated_sigma == 0
+    safe_sigma = simulated_sigma.copy()
+    safe_sigma[zero_sigma_mask] = 1.0
+
+    standardized_simulated = (simulated_summary_statistics - simulated_mu) / safe_sigma
+    standardized_observed = (observed_summary_statistics - simulated_mu) / safe_sigma
+    standardized_simulated[:, zero_sigma_mask] = 0.0
+    standardized_observed[zero_sigma_mask] = 0.0
+
+    return standardized_simulated, standardized_observed
+
+def select_summary_set(summary_statistics, summary_indices):
+    """Return a subset of summary statistics using the provided summary indices."""
+    summary_statistics = np.asarray(summary_statistics, dtype=np.float64)
+    return np.take(summary_statistics, summary_indices, axis=-1)
+
+def get_finite_distance_support(distances):
+    """Validate ABC distances and return the finite subset used for thresholding."""
+    distances = np.asarray(distances, dtype=np.float64)
+    finite_mask = np.isfinite(distances)
+    finite_distances = distances[finite_mask]
+    if finite_distances.size == 0:
+        raise ValueError("All ABC distances are non-finite; cannot compute acceptance threshold.")
+    return distances, finite_mask, finite_distances
+
+def compute_distances_for_summary_set(simulated_summary_statistics,
+                                      observed_summary_statistics,
+                                      summary_indices):
+    """Compute ABC distances for one chosen summary-statistic set."""
+    subset_simulated = select_summary_set(simulated_summary_statistics, summary_indices)
+    subset_observed = select_summary_set(observed_summary_statistics, summary_indices)
+    standardized_simulated, standardized_observed = scale_summary_statistics(
+        subset_simulated,
+        subset_observed
+    )
+    return np.linalg.norm(standardized_simulated - standardized_observed, axis=1)
+
+def get_accepted_indices_by_epsilon(distances, acceptance_epsilon_list):
+    """Return accepted simulation masks for each ABC tolerance in the list."""
+    distances, finite_mask, finite_distances = get_finite_distance_support(distances)
+    accepted_idx_by_epsilon = {}
+    for acceptance_epsilon in acceptance_epsilon_list:
+        acceptance_threshold = np.quantile(finite_distances, acceptance_epsilon)
+        accepted_idx_by_epsilon[acceptance_epsilon] = finite_mask & (distances <= acceptance_threshold)
+    return accepted_idx_by_epsilon
+
+def obtain_accepted_summaries(standardized_simulated, 
+                              standardized_observed, 
+                              simulated_summary_statistics,
+                              acceptance_epsilon=0.01):
+    """
+    Select accepted summary statistics based on ABC rejection criterion.
+
+    This function computes distances between standardized simulated and observed 
+    summary statistics, determines a tolerance threshold (ε) based on a specified 
+    quantile, and returns the subset of simulated summaries that are sufficiently 
+    close to the observed summaries.
+
+    Parameters
+    ----------
+    standardized_simulated : ndarray of shape (N, d)
+        Standardized summary statistics from N simulations.
+
+    standardized_observed : ndarray of shape (d,)
+        Standardized summary statistics from observed data.
+
+    simulated_summary_statistics : array-like of shape (N, d)
+        Original (unstandardized) simulated summary statistics.
+
+    acceptance_epsilon : float, optional (default=0.01)
+        Quantile used to define the acceptance threshold ε.
+        For example, 0.01 corresponds to accepting the closest 1% of simulations.
+
+    Returns
+    -------
+    accepted_summaries : ndarray of shape (N_accepted, d)
+        Subset of simulated summary statistics whose distance to the observed 
+        summaries is less than or equal to ε.
+
+    distances : ndarray of shape (N,)
+        Euclidean distances between each simulated summary and the observed summary.
+
+    Notes
+    -----
+    - Distances are computed using Euclidean norm:
+          d_i = || S_sim_scaled - S_obs_scaled ||
+
+    - The tolerance ε is determined as:
+          ε = quantile(distances, acceptance_epsilon)
+
+    - Accepted summaries correspond to simulations that best match the observed 
+      data in terms of summary statistics.
+
+    - The returned summaries are unstandardized to preserve interpretability 
+      for diagnostic plots and analysis.
+    """
+    # Compute distances between standardized simulated and observed summary statistics
+    distances = np.linalg.norm(standardized_simulated - standardized_observed, axis=1)
+    distances, finite_mask, finite_distances = get_finite_distance_support(distances)
+
+    acceptance_epsilon = np.quantile(finite_distances, acceptance_epsilon)  # 1% acceptance threshold
+    accepted_idx = finite_mask & (distances <= acceptance_epsilon)
+    # accepted_summaries = np.array(simulated_summary_statistics)[accepted_idx]
+    return (accepted_idx, distances)
+
+def save_samples_and_plots(simulated_summary_statistics, 
+                           observed_summary_statistics,
+                           distances,
+                           simulated_parameters,
+                           acceptance_epsilon_list=None):
+    """
+    Generate diagnostic plots for accepted summary statistics and save posterior samples.
+
+    This function:
+    1. Plots histograms of accepted summary statistics.
+    2. Overlays the observed summary statistic as a vertical reference line.
+    3. Extracts accepted parameter samples based on the ABC tolerance criterion.
+    4. Saves the accepted parameter samples as a CSV file (optional, currently commented).
+
+    Parameters
+    ----------
+    simulated_summary_statistics : ndarray of shape (N, d)
+        Unstandardized summary statistics from all simulations.
+
+    observed_summary_statistics : array-like of shape (d,)
+        Summary statistics computed from the observed dataset.
+
+    distances : ndarray of shape (N,)
+        Euclidean distances between each simulated summary and the observed summary.
+
+    simulated_parameters : list of tuples of length N
+        Parameter samples corresponding to each simulation, where each tuple is 
+        (beta, gamma, rho).
+
+    acceptance_epsilon_list : list of float or None, optional (default=None)
+        Quantile thresholds used to determine accepted samples.
+        If None, defaults to [0.01, 0.05, 0.10, 0.20].
+
+    Behavior
+    --------
+    - For each summary statistic:
+        * Four overlaid histograms are plotted, one for each acceptance ε.
+        * The observed value is shown as a red vertical line.
+    - Accepted parameter samples are filtered and saved separately for each ε threshold.
+    - A timestamp is generated to uniquely label outputs.
+
+    Outputs
+    -------
+    - Diagnostic plots (displayed via matplotlib; saving is currently commented out).
+    - CSV file of accepted parameter samples (currently commented out):
+        Format: [beta, gamma, rho]
+
+    Notes
+    -----
+    - Plots are generated using unstandardized summaries for interpretability.
+    - Histogram binning (bins=30) may appear sparse for discrete summaries 
+      (e.g., time to peak).
+    - The ABC posterior is approximate due to:
+        * Non-sufficient summary statistics
+        * Non-zero tolerance ε
+    - The quantile threshold for each ε is computed directly from `distances`.
+
+    Returns
+    -------
+    None
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    simulated_summary_statistics = np.array(simulated_summary_statistics)
+    if acceptance_epsilon_list is None:
+        acceptance_epsilon_list = [0.005, 0.01, 0.02]
+
+    # Ensure output directories exist regardless of launch directory.
+    SANITY_CHECK_DIR.mkdir(parents=True, exist_ok=True)
+    PARAM_ESTIMATES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Precompute accepted sets for each epsilon value
+    accepted_idx_by_epsilon = get_accepted_indices_by_epsilon(distances, acceptance_epsilon_list)
+    accepted_summaries_by_epsilon = {}
+
+    for acceptance_epsilon in acceptance_epsilon_list:
+        accepted_idx = accepted_idx_by_epsilon[acceptance_epsilon]
+        accepted_idx_by_epsilon[acceptance_epsilon] = accepted_idx
+        accepted_summaries_by_epsilon[acceptance_epsilon] = simulated_summary_statistics[accepted_idx]
+
+    for i in range(simulated_summary_statistics.shape[1]):
+        plt.figure()
+        for acceptance_epsilon in acceptance_epsilon_list:
+            accepted_summaries = accepted_summaries_by_epsilon[acceptance_epsilon]
+            plt.hist(
+                accepted_summaries[:, i],
+                bins=17,
+                alpha=0.35,
+                density=True,
+                label=f"ε={acceptance_epsilon:.3f} (n={accepted_summaries.shape[0]})"
+            )
+        plt.axvline(observed_summary_statistics[i], color='red', linewidth=2)
+        plt.title(f"Summary {summary_statistics_name[i]} (Accepted Simulations by ε)")
+        plt.xlabel("Value")
+        plt.ylabel("Density")
+        plt.legend()
+        plot_path = SANITY_CHECK_DIR / f"summary_{summary_statistics_name[i]}_overlay_eps_{timestamp}.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+    # Save accepted parameters to CSV for each epsilon threshold
+    for acceptance_epsilon in acceptance_epsilon_list:
+        accepted_idx = accepted_idx_by_epsilon[acceptance_epsilon]
+        accepted_parameters = [params for params, keep in zip(simulated_parameters, accepted_idx) if keep]
+        print(f"[ABC] ε={acceptance_epsilon:.4f}: accepted {len(accepted_parameters)} / {len(simulated_parameters)} simulations")
+        final_chosen_posteriors = pd.DataFrame(accepted_parameters, columns=['beta', 'gamma', 'rho'])
+        filename = f"abc-basic_eps-{acceptance_epsilon:.4f}_{timestamp}.csv"
+        csv_path = PARAM_ESTIMATES_DIR / filename
+        final_chosen_posteriors.to_csv(csv_path, index=False)
+
+def plot_posterior_comparison_plots(simulated_summary_statistics,
+                                    observed_summary_statistics,
+                                    simulated_parameters,
+                                    comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """Plot rich-set posterior overlays against the requested reduced summary sets."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
+    observed_summary_statistics = np.asarray(observed_summary_statistics, dtype=np.float64)
+    simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
+
+    PARAM_ESTIMATES_DIR.mkdir(parents=True, exist_ok=True)
+    SUMMARY_SET_STUDY_DIR.mkdir(parents=True, exist_ok=True)
+
+    accepted_idx_by_set = {}
+    for summary_set_name, summary_indices in SUMMARY_SET_INDICES.items():
+        distances = compute_distances_for_summary_set(
+            simulated_summary_statistics,
+            observed_summary_statistics,
+            summary_indices
+        )
+        accepted_idx_by_set[summary_set_name] = get_accepted_indices_by_epsilon(
+            distances,
+            [comparison_epsilon]
+        )[comparison_epsilon]
+
+    for rich_set_name, reduced_set_name in SUMMARY_SET_COMPARISONS:
+        rich_parameters = simulated_parameters[accepted_idx_by_set[rich_set_name]]
+        reduced_parameters = simulated_parameters[accepted_idx_by_set[reduced_set_name]]
+
+        fig, axes = plt.subplots(1, len(PARAMETER_NAMES), figsize=(15, 4.5))
+        for param_idx, (ax, param_name) in enumerate(zip(axes, PARAMETER_NAMES)):
+            ax.hist(
+                rich_parameters[:, param_idx],
+                bins=17,
+                alpha=0.45,
+                density=True,
+                label=f"{rich_set_name} (n={rich_parameters.shape[0]})"
+            )
+            ax.hist(
+                reduced_parameters[:, param_idx],
+                bins=17,
+                alpha=0.45,
+                density=True,
+                label=f"{reduced_set_name} (n={reduced_parameters.shape[0]})"
+            )
+            ax.set_title(f"Posterior of {param_name}")
+            ax.set_xlabel(param_name)
+            ax.set_ylabel("Density")
+            ax.legend()
+
+        fig.suptitle(
+            f"Posterior comparison at ε={comparison_epsilon:.3f}: "
+            f"{rich_set_name} vs {reduced_set_name}"
+        )
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+
+        comparison_slug = (
+            f"{rich_set_name.lower().replace(' ', '_')}_vs_"
+            f"{reduced_set_name.lower().replace(' ', '_')}"
+        )
+        plot_path = (
+            SUMMARY_SET_STUDY_DIR  
+            / f"posterior_{comparison_slug}_eps-{comparison_epsilon:.4f}_{timestamp}.png"
+        )
+
+        plt.show()
+        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+def save_summary_set_outputs(summary_set_name,
+                             summary_indices,
+                             simulated_summary_statistics,
+                             observed_summary_statistics,
+                             distances,
+                             simulated_parameters,
+                             acceptance_epsilon_list=None):
+    """Save accepted-summary plots and posterior samples for one chosen summary set."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
+    observed_summary_statistics = np.asarray(observed_summary_statistics, dtype=np.float64)
+    simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
+    summary_indices = tuple(summary_indices)
+
+    if acceptance_epsilon_list is None:
+        acceptance_epsilon_list = [0.005, 0.01, 0.02]
+
+    summary_set_slug = summary_set_name.lower().replace(" ", "_")
+    summary_set_dir = SUMMARY_SET_STUDY_DIR / summary_set_slug
+    sanity_check_dir = summary_set_dir / "sanity_check"
+    param_estimates_dir = summary_set_dir / "param_estimates"
+    regression_adjustment_dir = summary_set_dir / "regression_adjustment"
+
+    sanity_check_dir.mkdir(parents=True, exist_ok=True)
+    param_estimates_dir.mkdir(parents=True, exist_ok=True)
+    regression_adjustment_dir.mkdir(parents=True, exist_ok=True)
+
+    accepted_idx_by_epsilon = get_accepted_indices_by_epsilon(distances, acceptance_epsilon_list)
+    accepted_summaries_by_epsilon = {}
+
+    for acceptance_epsilon in acceptance_epsilon_list:
+        accepted_idx = accepted_idx_by_epsilon[acceptance_epsilon]
+        accepted_summaries_by_epsilon[acceptance_epsilon] = simulated_summary_statistics[accepted_idx]
+
+    for summary_idx in summary_indices:
+        plt.figure()
+        for acceptance_epsilon in acceptance_epsilon_list:
+            accepted_summaries = accepted_summaries_by_epsilon[acceptance_epsilon]
+            plt.hist(
+                accepted_summaries[:, summary_idx],
+                bins=17,
+                alpha=0.35,
+                density=True,
+                label=f"ε={acceptance_epsilon:.3f} (n={accepted_summaries.shape[0]})"
+            )
+        plt.axvline(observed_summary_statistics[summary_idx], color='red', linewidth=2)
+        plt.title(
+            f"Summary {summary_statistics_name[summary_idx]} "
+            f"(Accepted Simulations by ε, {summary_set_name})"
+        )
+        plt.xlabel("Value")
+        plt.ylabel("Density")
+        plt.legend()
+        plot_path = (
+            sanity_check_dir
+            / f"{summary_set_slug}_summary_{summary_statistics_name[summary_idx]}_overlay_eps_{timestamp}.png"
+        )
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+    for acceptance_epsilon in acceptance_epsilon_list:
+        accepted_idx = accepted_idx_by_epsilon[acceptance_epsilon]
+        accepted_parameters = simulated_parameters[accepted_idx]
+        print(
+            f"[ABC:{summary_set_name}] ε={acceptance_epsilon:.4f}: "
+            f"accepted {accepted_parameters.shape[0]} / {simulated_parameters.shape[0]} simulations"
+        )
+        final_chosen_posteriors = pd.DataFrame(accepted_parameters, columns=['beta', 'gamma', 'rho'])
+        filename = f"{summary_set_slug}_abc-basic_eps-{acceptance_epsilon:.4f}_{timestamp}.csv"
+        csv_path = param_estimates_dir / filename
+        final_chosen_posteriors.to_csv(csv_path, index=False)
+
+    main_acceptance_idx = accepted_idx_by_epsilon[POSTERIOR_COMPARISON_EPSILON]
+    np.savez(
+        regression_adjustment_dir / f"{summary_set_slug}_abc_rejection_output_eps-{POSTERIOR_COMPARISON_EPSILON:.4f}.npz",
+        accepted_parameters=simulated_parameters[main_acceptance_idx],
+        accepted_summaries=simulated_summary_statistics[main_acceptance_idx][:, summary_indices],
+        observed_summary=observed_summary_statistics[list(summary_indices)],
+        accepted_distances=np.asarray(distances, dtype=np.float64)[main_acceptance_idx],
+        summary_indices=np.asarray(summary_indices, dtype=np.int64),
+        summary_names=np.asarray([summary_statistics_name[idx] for idx in summary_indices], dtype=object),
+    )
+
+###############
+#
+#
+# 4. MAIN FUNCTION
+#
+#
+###############
+def main() -> None:
+    """
+    Execute the full ABC rejection pipeline for parameter inference in the SIR model.
+
+    This function orchestrates the end-to-end workflow:
+    1. Generates simulated datasets by repeatedly sampling parameters and computing 
+       summary statistics.
+    2. Standardizes simulated and observed summary statistics using simulation-based scaling.
+    3. Applies the ABC rejection algorithm to select simulations whose summaries are 
+       closest to the observed data.
+    4. Produces diagnostic plots and saves accepted posterior samples.
+
+    Workflow
+    --------
+    - Simulation:
+        Runs N_sim independent simulations using `one_simulation()`, which returns:
+        * Summary statistics (used for matching)
+        * Corresponding parameters (beta, gamma, rho)
+
+    - Normalization:
+        Uses `scale_summary_statistics()` to standardize both simulated and observed 
+        summaries based on simulation-derived mean and standard deviation.
+
+    - ABC Rejection:
+        Uses `obtain_accepted_summaries()` to:
+        * Compute Euclidean distances between standardized summaries
+        * Select the closest simulations based on a quantile threshold (default: 1%)
+
+    - Output:
+        Uses `save_samples_and_plots()` to:
+        * Visualize posterior predictive checks (accepted summaries vs observed)
+        * Save accepted parameter samples (approximate posterior)
+
+    Notes
+    -----
+    - A fixed random seed is set for reproducibility.
+    - The resulting posterior is approximate due to:
+        * Use of non-sufficient summary statistics
+        * Finite tolerance (ε)
+    - The quality of inference depends heavily on:
+        * Choice of summary statistics
+        * Distance metric and normalization
+        * Acceptance threshold
+
+    Returns
+    -------
+    None
+    """
+    # set seed for reproducibility during parameter sampling per simulation 
+    seed = 2026  # Set seed for reproducibility
+    seed_sequence = np.random.SeedSequence(seed)
+    simulation_seeds = seed_sequence.generate_state(N_sim, dtype=np.uint64).tolist()
+    simulation_context = build_simulation_context(N)
+    n_workers = max(1, (os.cpu_count() or 1) - 1)
+
+    # simulate 30_000 times
+    if n_workers == 1:
+        simulation_results = [
+            one_simulation(np.random.default_rng(int(sim_seed)), simulation_context)
+            for sim_seed in tqdm(simulation_seeds, desc="Running ABC")
+        ]
+    else:
+        spawn_context = mp.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            mp_context=spawn_context,
+            initializer=_initialize_worker,
+            initargs=(simulation_context,)
+        ) as executor:
+            simulation_results = list(
+                tqdm(
+                    executor.map(_one_simulation_from_seed, simulation_seeds, chunksize=64),
+                    total=N_sim,
+                    desc="Running ABC"
+                )
+            )
+
+    simulated_summary_statistics, simulated_parameters = zip(*simulation_results)
+
+    # scale simulated data and observed data
+    observed_summary_statistics = get_obs_summaries()
+    standardized_simulated, standardized_observed = scale_summary_statistics(simulated_summary_statistics, 
+                                                                             observed_summary_statistics)
+    
+    # obtain accepted summaries from ABC rejection algo
+    accepted_idx, distances = obtain_accepted_summaries(standardized_simulated, 
+                                             standardized_observed,
+                                             simulated_summary_statistics)
+    
+    # save parameters and plots of accepted summaries
+    save_samples_and_plots(simulated_summary_statistics,
+                           observed_summary_statistics,
+                           distances,
+                           simulated_parameters,
+                           acceptance_epsilon_list=acceptance_epsilon_list)
+    reduced_set_e_distances = compute_distances_for_summary_set(
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        SUMMARY_SET_INDICES["Reduced set E"]
+    )
+    plot_posterior_comparison_plots(
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        simulated_parameters,
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON
+    )
+    save_summary_set_outputs(
+        "Reduced set E",
+        SUMMARY_SET_INDICES["Reduced set E"],
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        reduced_set_e_distances,
+        simulated_parameters,
+        acceptance_epsilon_list=acceptance_epsilon_list
+    )
+
+    # save the full simulation results for future analysis (e.g. regression adjustment, ABC-MCMC)
+    reduced_set_e_indices = SUMMARY_SET_INDICES["Reduced set E"]
+    reduced_set_e_simulated_summaries = np.array(simulated_summary_statistics)[:, reduced_set_e_indices]
+    reduced_set_e_observed_summary = np.array(observed_summary_statistics)[list(reduced_set_e_indices)]
+    reduced_set_e_summary_mu = reduced_set_e_simulated_summaries.mean(axis=0)
+    reduced_set_e_summary_sigma = reduced_set_e_simulated_summaries.std(axis=0)
+    reduced_set_e_zero_sigma_mask = reduced_set_e_summary_sigma == 0
+    reduced_set_e_safe_sigma = reduced_set_e_summary_sigma.copy()
+    reduced_set_e_safe_sigma[reduced_set_e_zero_sigma_mask] = 1.0
+    reduced_set_e_standardized_observed = (
+        reduced_set_e_observed_summary - reduced_set_e_summary_mu
+    ) / reduced_set_e_safe_sigma
+    reduced_set_e_standardized_observed[reduced_set_e_zero_sigma_mask] = 0.0
+    reduced_set_e_distances, reduced_set_e_finite_mask, reduced_set_e_finite_distances = get_finite_distance_support(
+        reduced_set_e_distances
+    )
+    reduced_set_e_distance_threshold = np.quantile(
+        reduced_set_e_finite_distances,
+        POSTERIOR_COMPARISON_EPSILON
+    )
+    reduced_set_e_accepted_idx = reduced_set_e_finite_mask & (
+        reduced_set_e_distances <= reduced_set_e_distance_threshold
+    )
+    accepted_summaries = reduced_set_e_simulated_summaries[reduced_set_e_accepted_idx]
+    accepted_parameters = np.array(simulated_parameters)[reduced_set_e_accepted_idx]
+    accepted_distances = reduced_set_e_distances[reduced_set_e_accepted_idx]
+    if accepted_parameters.shape[0] == 0:
+        raise ValueError("Reduced set E rejection run produced no accepted samples at ε=0.01.")
+    np.savez(
+        f"{REGRESSION_ADJUSTMENT_DIR}/abc_rejection_output.npz",
+        reference_parameters=np.array(simulated_parameters),
+        reference_summaries=reduced_set_e_simulated_summaries,
+        distances=reduced_set_e_distances,
+        accepted_parameters=accepted_parameters,
+        accepted_summaries=accepted_summaries,
+        observed_summary=reduced_set_e_observed_summary,
+        standardized_observed=reduced_set_e_standardized_observed,
+        summary_mu=reduced_set_e_summary_mu,
+        summary_sigma=reduced_set_e_safe_sigma,
+        zero_sigma_mask=reduced_set_e_zero_sigma_mask,
+        accepted_distances=accepted_distances,
+        acceptance_epsilon=POSTERIOR_COMPARISON_EPSILON,
+        distance_threshold=reduced_set_e_distance_threshold,
+        initial_parameters=accepted_parameters[0],
+        initial_summary=accepted_summaries[0],
+        initial_distance=accepted_distances[0],
+        summary_indices=np.array(reduced_set_e_indices),
+        summary_names=np.array([summary_statistics_name[idx] for idx in reduced_set_e_indices], dtype=object),
+        summary_set_name=np.array("Reduced set E", dtype=object),
+    )
+
+###############
+#
+#
+# 5. RUN MAIN FUNCTION
+#
+#
+###############
+if __name__ == "__main__":
+    main()
