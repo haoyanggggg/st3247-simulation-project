@@ -14,19 +14,12 @@ venv/
 
 # VS Code
 .vscode/
+*.swp
+*.swo
+*~
 
-# OS files
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.temp
-
-# Python packaging
-build/
-dist/
-*.egg-info/
+# MikeTex related
+.log
+.out
+.toc
+.pdf
