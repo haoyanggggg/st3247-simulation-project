@@ -49,3 +49,9 @@ ENV/
 *.swp
 *.swo
 *~
+
+# MikeTex related
+.log
+.out
+.toc
+.pdf
