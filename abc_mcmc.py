@@ -7,13 +7,13 @@ Description
 -----------
 This script extends the existing ABC rejection workflow to an ABC-MCMC sampler
 for the posterior distribution of (beta, gamma, rho). The ABC calibration for
-Reduced set E is loaded from the saved rejection reference run rather than
+the chosen reference summary set is loaded from the saved rejection reference run rather than
 recomputed inside this script.
 
 Key Design Choices
 ------------------
 - Summary statistics:
-    Reduced set E from `abc_rejection.py`
+    Reference summary set from `abc_rejection.py`
 
 - Distance function:
     Euclidean distance on standardized summaries
@@ -31,7 +31,7 @@ Key Design Choices
 
 Outputs
 -------
-- Reference rejection samples under the same Reduced set E configuration
+- Reference rejection samples under the same chosen summary-set configuration
 - Posterior samples after burn-in
 - Trace plots for beta, gamma, rho
 - Rejection-vs-MCMC posterior comparison histograms
@@ -56,7 +56,8 @@ from abc_rejection import (
     N,
     PARAMETER_NAMES,
     SUMMARY_SET_INDICES,
-    REGRESSION_ADJUSTMENT_DIR,
+    REFERENCE_SUMMARY_SET_NAME,
+    REFERENCE_RESULTS_PATH,
     summary_statistics_name,
     epsilon,
     degrees,
@@ -81,7 +82,7 @@ from abc_rejection import (
 #
 #
 ###############
-SUMMARY_SET_NAME = "Reduced set E"
+SUMMARY_SET_NAME = REFERENCE_SUMMARY_SET_NAME
 SUMMARY_INDICES = SUMMARY_SET_INDICES[SUMMARY_SET_NAME]
 SUMMARY_NAMES = [summary_statistics_name[idx] for idx in SUMMARY_INDICES]
 
@@ -99,9 +100,6 @@ BASE_DIR = Path(__file__).resolve().parent
 ABC_MCMC_DIR = BASE_DIR / "outputs" / "abc_mcmc"
 ABC_MCMC_PLOTS_DIR = ABC_MCMC_DIR / "plots"
 ABC_MCMC_PARAM_DIR = ABC_MCMC_DIR / "param_estimates"
-REFERENCE_RESULTS_PATH = REGRESSION_ADJUSTMENT_DIR / "abc_rejection_output.npz"
-
-
 ###############
 #
 #
@@ -111,7 +109,7 @@ REFERENCE_RESULTS_PATH = REGRESSION_ADJUSTMENT_DIR / "abc_rejection_output.npz"
 ###############
 def load_reference_rejection_results(reference_path: Path = REFERENCE_RESULTS_PATH) -> dict:
     """
-    Load the saved Reduced set E rejection calibration used as the MCMC reference.
+    Load the saved rejection calibration used as the MCMC reference.
     """
     if not reference_path.exists():
         raise FileNotFoundError(
@@ -145,13 +143,13 @@ def load_reference_rejection_results(reference_path: Path = REFERENCE_RESULTS_PA
             raise ValueError(
                 "The saved rejection reference file is missing required fields: "
                 f"{missing_keys}. Re-run abc_rejection.py to regenerate "
-                "abc_rejection_output.npz with the full Reduced set E calibration."
+                f"{reference_path.name} with the full {SUMMARY_SET_NAME} calibration."
             )
 
         summary_indices = np.asarray(data["summary_indices"], dtype=np.int64)
         if not np.array_equal(summary_indices, np.asarray(SUMMARY_INDICES, dtype=np.int64)):
             raise ValueError(
-                "The saved rejection reference file does not match Reduced set E. "
+                f"The saved rejection reference file does not match {SUMMARY_SET_NAME}. "
                 "Re-run abc_rejection.py for the current summary-set configuration."
             )
 
@@ -189,7 +187,7 @@ def simulate_summary_statistics(parameters: np.ndarray,
                                 rng: np.random.Generator,
                                 simulation_context: dict) -> np.ndarray:
     """
-    Simulate the model at a fixed parameter vector and compute all six summaries.
+    Simulate the model at a fixed parameter vector and compute the full summary vector.
     """
     beta, gamma, rho = parameters
 
@@ -235,7 +233,17 @@ def simulate_summary_statistics(parameters: np.ndarray,
         late_time_points_denom,
     )
 
-    return np.array(
+    rewiring_per_infection = (
+        np.sum(rewire_counts, dtype=np.float64) /
+        (np.sum(infected_fraction, dtype=np.float64) + epsilon)
+    )
+
+    peak_val = np.max(infected_fraction)
+    half_peak = 0.5 * peak_val
+    above_half = np.where(infected_fraction >= half_peak)[0]
+    peak_width_half_max = float(above_half[-1] - above_half[0]) if above_half.size >= 2 else 0.0
+
+    full_summary = np.array(
         [
             max_infection_frac,
             time_to_peak,
@@ -243,9 +251,13 @@ def simulate_summary_statistics(parameters: np.ndarray,
             slope_rewire,
             var_degree,
             slope_late_infection,
+            rewiring_per_infection,
+            peak_width_half_max,
         ],
         dtype=np.float64,
     )
+
+    return full_summary[list(SUMMARY_INDICES)]
 
 def standardize_with_reference(summary_statistics: np.ndarray,
                                summary_mu: np.ndarray,
@@ -311,12 +323,11 @@ def run_abc_mcmc(rng: np.random.Generator,
         )
 
         if in_prior_support(proposed_parameters):
-            proposed_full_summary = simulate_summary_statistics(
+            proposed_summary = simulate_summary_statistics(
                 proposed_parameters,
                 rng,
                 simulation_context,
             )
-            proposed_summary = proposed_full_summary[list(SUMMARY_INDICES)]
             proposed_distance = compute_distance(
                 proposed_summary,
                 standardized_observed,
@@ -383,14 +394,14 @@ def plot_posterior_comparison(reference_accepted_parameters: np.ndarray,
     for param_idx, (ax, param_name) in enumerate(zip(axes, PARAMETER_NAMES)):
         ax.hist(
             reference_accepted_parameters[:, param_idx],
-            bins=17,
+            bins=30,
             density=True,
             alpha=0.45,
             label=f"ABC rejection (n={reference_accepted_parameters.shape[0]})",
         )
         ax.hist(
             posterior_samples[:, param_idx],
-            bins=17,
+            bins=30,
             density=True,
             alpha=0.45,
             label=f"ABC-MCMC (n={posterior_samples.shape[0]})",
@@ -538,7 +549,7 @@ def effective_sample_size(x):
 ###############
 def main() -> None:
     """
-    Execute the ABC-MCMC workflow using Reduced set E summary statistics.
+    Execute the ABC-MCMC workflow using the chosen reference summary statistics.
     """
     rng = np.random.default_rng(seed)
     simulation_context = build_simulation_context(N)

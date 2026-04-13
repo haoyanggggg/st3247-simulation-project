@@ -26,6 +26,8 @@ Key Design Choices
     * Early rewiring growth rate
     * Degree variance
     * Late infection decay rate
+    * Rewiring per infection
+    * Infection peak width at half maximum
 
 - Distance function:
     Euclidean distance on standardized summaries
@@ -75,7 +77,7 @@ from pathlib import Path
 #
 ###############
 N = 200
-N_sim = 30_000 # with threshold of 1%, we will have 300 accepted samples for posterior analysis
+N_sim = 100_000 # with threshold of 1%, we will have 300 accepted samples for posterior analysis
 degree_counts_max = 30 + 1
 epsilon = 1e-8
 seed = 2026
@@ -86,7 +88,9 @@ seed = 2026
 # SUMMARY STATISTIC 5: Variance structure of degree counts INFORMS RHO
 #                      ↑rho = distortion from Erdos-Renyi random graph's binomial distribution
 #                      ↓rho = closer to binomial distribution
-# SUMMARY STATISTIC 6: Decay structure of infection INFORMS RHO 
+# SUMMARY STATISTIC 6: Decay structure of infection INFORMS RHO
+# SUMMARY STATISTIC 7: Rewiring per infection INFORMS RHO
+# SUMMARY STATISTIC 8: Infection peak width at half maximum INFORMS GAMMA
 
 summary_statistics_name = [
     "Max infection fraction",
@@ -94,7 +98,9 @@ summary_statistics_name = [
     "Early growth rate of infection",
     "Early growth rate of rewiring",
     "Variance structure of degree counts",
-    "Late decay rate of infection"
+    "Late decay rate of infection",
+    "Rewiring per infection",
+    "Infection peak width at half maximum",
 ]
 MAX_INFECTION_IDX = 0
 TIME_TO_PEAK_IDX = 1
@@ -102,6 +108,8 @@ EARLY_INFECTION_GROWTH_IDX = 2
 EARLY_REWIRE_COUNT_IDX = 3
 DEGREE_VARIANCE_IDX = 4
 LATE_INFECTION_DECAY_IDX = 5
+REWIRING_PER_INFECTION_IDX = 6
+PEAK_WIDTH_HALF_MAX_IDX = 7
 
 SUMMARY_SET_INDICES = {
     "Rich set": (
@@ -111,7 +119,11 @@ SUMMARY_SET_INDICES = {
         EARLY_REWIRE_COUNT_IDX,
         DEGREE_VARIANCE_IDX,
         LATE_INFECTION_DECAY_IDX,
+        REWIRING_PER_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX,
     ),
+
+    # lack of peak width statistic leads to worse inference of beta/gamma, which in turn leads to worse inference of rho since the network dynamics are driven by the epidemic dynamics
     "Reduced set A": (
         MAX_INFECTION_IDX,
         TIME_TO_PEAK_IDX,
@@ -139,18 +151,44 @@ SUMMARY_SET_INDICES = {
     ),
     "Reduced set E": (
         MAX_INFECTION_IDX,
-        TIME_TO_PEAK_IDX,
-        LATE_INFECTION_DECAY_IDX,
+        EARLY_INFECTION_GROWTH_IDX,
         EARLY_REWIRE_COUNT_IDX,
         DEGREE_VARIANCE_IDX,
     ),
     "Reduced set F": (
         MAX_INFECTION_IDX,
-        EARLY_INFECTION_GROWTH_IDX,
+        TIME_TO_PEAK_IDX,
+        LATE_INFECTION_DECAY_IDX,
         EARLY_REWIRE_COUNT_IDX,
         DEGREE_VARIANCE_IDX,
     ),
+    "Reduced set G": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        LATE_INFECTION_DECAY_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ),
+    "Reduced set H": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ),
+    "Reduced set I": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX
+    ),
+
 }
+
+# compare between A, C, I, Rich sets to see how the presence/absence of certain summaries affects the posterior, and whether the effect is consistent with our understanding of which summaries inform which parameters
 SUMMARY_SET_COMPARISONS = (
     ("Rich set", "Reduced set A"),
     ("Rich set", "Reduced set B"),
@@ -158,7 +196,14 @@ SUMMARY_SET_COMPARISONS = (
     ("Rich set", "Reduced set D"),
     ("Rich set", "Reduced set E"),
     ("Rich set", "Reduced set F"),
+    ("Rich set", "Reduced set G"),
+    ("Rich set", "Reduced set H"),
+    ("Rich set", "Reduced set I"),
 )
+
+REFERENCE_SUMMARY_SET_NAME = "Reduced set I"
+REFERENCE_SUMMARY_SET_INDICES = SUMMARY_SET_INDICES[REFERENCE_SUMMARY_SET_NAME]
+REFERENCE_SUMMARY_SET_SLUG = REFERENCE_SUMMARY_SET_NAME.lower().replace(" ", "_")
 PARAMETER_NAMES = ("beta", "gamma", "rho")
 acceptance_epsilon_list = [0.005, 0.01, 0.03]
 POSTERIOR_COMPARISON_EPSILON = 0.01
@@ -168,6 +213,7 @@ SANITY_CHECK_DIR = BASIC_ABC_DIR / "sanity_check"
 PARAM_ESTIMATES_DIR = BASIC_ABC_DIR / "param_estimates"
 SUMMARY_SET_STUDY_DIR = BASIC_ABC_DIR / "summary_set_study"
 REGRESSION_ADJUSTMENT_DIR = BASE_DIR / "data" / "intermediate"
+REFERENCE_RESULTS_PATH = REGRESSION_ADJUSTMENT_DIR / "abc_rejection_output.npz"
 
 early_time_window_min = 2
 early_time_window_max = 6 + 1
@@ -277,6 +323,16 @@ def one_simulation(rng: np.random.Generator, simulation_context: dict) -> list:
                 Slope of log infection fraction during late time window.
                 Captures decay dynamics → informs gamma (and indirectly rho).
 
+            - rewiring_per_infection (float):
+                Total rewiring activity divided by total infection burden
+                across the trajectory.
+                Captures network-adaptation intensity relative to epidemic size
+                → informs rho.
+
+            - peak_width_half_max (float):
+                Duration for which infection remains above half of its peak value.
+                Captures how broad the epidemic peak is → informs beta/gamma.
+
         2. tuple of sampled parameters:
             - beta (float): infection rate
             - gamma (float): recovery rate
@@ -331,9 +387,21 @@ def one_simulation(rng: np.random.Generator, simulation_context: dict) -> list:
     slope_late_infection = compute_linear_slope(late_log_infection_fraction, late_time_points_centered, late_time_points_denom)
     # print("Late infection decay rate (slope):", slope_late_infection)
 
+    # SUMMARY STATISTIC 7: Rewiring per infection INFORMS RHO
+    rewiring_per_infection = (
+        np.sum(rewire_counts, dtype=np.float64) /
+        (np.sum(infected_fraction, dtype=np.float64) + epsilon)
+    )
+
+    # SUMMARY STATISTIC 8: Infection peak width at half maximum INFORMS BETA/GAMMA
+    peak_val = np.max(infected_fraction)
+    half_peak = 0.5 * peak_val
+    above_half = np.where(infected_fraction >= half_peak)[0]
+    peak_width_half_max = float(above_half[-1] - above_half[0]) if above_half.size >= 2 else 0.0
+
     return [
         (max_infection_frac, time_to_peak, slope_early_infection, 
-            slope_rewire, var_degree, slope_late_infection),
+            slope_rewire, var_degree, slope_late_infection, rewiring_per_infection, peak_width_half_max),
         (beta, gamma, rho)
     ]
 
@@ -575,7 +643,7 @@ def save_samples_and_plots(simulated_summary_statistics,
             accepted_summaries = accepted_summaries_by_epsilon[acceptance_epsilon]
             plt.hist(
                 accepted_summaries[:, i],
-                bins=17,
+                bins=30,
                 alpha=0.35,
                 density=True,
                 label=f"ε={acceptance_epsilon:.3f} (n={accepted_summaries.shape[0]})"
@@ -633,14 +701,14 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
         for param_idx, (ax, param_name) in enumerate(zip(axes, PARAMETER_NAMES)):
             ax.hist(
                 rich_parameters[:, param_idx],
-                bins=17,
+                bins=30,
                 alpha=0.45,
                 density=True,
                 label=f"{rich_set_name} (n={rich_parameters.shape[0]})"
             )
             ax.hist(
                 reduced_parameters[:, param_idx],
-                bins=17,
+                bins=30,
                 alpha=0.45,
                 density=True,
                 label=f"{reduced_set_name} (n={reduced_parameters.shape[0]})"
@@ -709,7 +777,7 @@ def save_summary_set_outputs(summary_set_name,
             accepted_summaries = accepted_summaries_by_epsilon[acceptance_epsilon]
             plt.hist(
                 accepted_summaries[:, summary_idx],
-                bins=17,
+                bins=30,
                 alpha=0.35,
                 density=True,
                 label=f"ε={acceptance_epsilon:.3f} (n={accepted_summaries.shape[0]})"
@@ -752,6 +820,83 @@ def save_summary_set_outputs(summary_set_name,
         summary_indices=np.asarray(summary_indices, dtype=np.int64),
         summary_names=np.asarray([summary_statistics_name[idx] for idx in summary_indices], dtype=object),
     )
+
+####################################################################### Added to see which summary sets are most informative #########################################################
+def compute_posterior_spread_table(simulated_parameters,
+                                   simulated_summary_statistics,
+                                   observed_summary_statistics,
+                                   comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """
+    For each summary set, compute normalized posterior std per parameter.
+    Lower = tighter posterior = more informative summary set.
+    """
+    simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
+    prior_widths = np.array([0.5-0.05, 0.2-0.02, 0.8-0.0])  # beta, gamma, rho
+    
+    rows = []
+    for set_name, indices in SUMMARY_SET_INDICES.items():
+        distances = compute_distances_for_summary_set(
+            simulated_summary_statistics, observed_summary_statistics, indices
+        )
+        accepted_idx = get_accepted_indices_by_epsilon(
+            distances, [comparison_epsilon]
+        )[comparison_epsilon]
+        posterior = simulated_parameters[accepted_idx]
+        
+        if posterior.shape[0] < 10:
+            continue
+        
+        normalized_std = np.std(posterior, axis=0) / prior_widths
+        rows.append({
+            "Summary set": set_name,
+            "n_dims": len(indices),
+            "β std (norm)": round(normalized_std[0], 3),
+            "γ std (norm)": round(normalized_std[1], 3),
+            "ρ std (norm)": round(normalized_std[2], 3),
+            "mean std": round(normalized_std.mean(), 3),
+        })
+    
+    return pd.DataFrame(rows).sort_values("mean std")
+
+######################################################### Added heatmap to visualize posterior spread ####################################################
+def plot_posterior_spread_heatmap(spread_df, filename):
+    """Heatmap: rows=summary sets, cols=parameters, values=normalized posterior std."""
+    SUMMARY_SET_STUDY_DIR.mkdir(parents=True, exist_ok=True)
+    
+    matrix = spread_df.set_index("Summary set")[["β std (norm)", "γ std (norm)", "ρ std (norm)"]].values
+    set_names = spread_df["Summary set"].tolist()
+    matrix_min = float(np.min(matrix))
+    matrix_max = float(np.max(matrix))
+    color_padding = max(0.01, 0.05 * (matrix_max - matrix_min))
+
+    if abs(matrix_max - matrix_min) <= 1e-12:
+        vmin = matrix_min - color_padding
+        vmax = matrix_max + color_padding
+    else:
+        vmin = max(0.0, matrix_min - color_padding)
+        vmax = matrix_max + color_padding
+    
+    fig, ax = plt.subplots(figsize=(7, len(set_names) * 0.7 + 1))
+    im = ax.imshow(matrix, aspect='auto', cmap='RdYlGn_r', vmin=vmin, vmax=vmax)
+    
+    ax.set_xticks([0, 1, 2])
+    ax.set_xticklabels(["β", "γ", "ρ"])
+    ax.set_yticks(range(len(set_names)))
+    ax.set_yticklabels(set_names)
+    
+    for i in range(len(set_names)):
+        for j in range(3):
+            normalized_value = (matrix[i, j] - vmin) / max(vmax - vmin, 1e-12)
+            text_color = "white" if normalized_value >= 0.6 else "black"
+            ax.text(j, i, f"{matrix[i,j]:.2f}", ha='center', va='center', fontsize=9, color=text_color)
+    
+    plt.colorbar(im, ax=ax, label="Normalized posterior std (lower = tighter)")
+    ax.set_title(f"Posterior spread by summary set (ε={POSTERIOR_COMPARISON_EPSILON})")
+    fig.tight_layout()
+    fig.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close(fig)
+############################################### END OF ADDITION #######################################################
 
 ###############
 #
@@ -855,10 +1000,10 @@ def main() -> None:
                            distances,
                            simulated_parameters,
                            acceptance_epsilon_list=acceptance_epsilon_list)
-    reduced_set_e_distances = compute_distances_for_summary_set(
+    reference_set_distances = compute_distances_for_summary_set(
         simulated_summary_statistics,
         observed_summary_statistics,
-        SUMMARY_SET_INDICES["Reduced set E"]
+        REFERENCE_SUMMARY_SET_INDICES
     )
     plot_posterior_comparison_plots(
         simulated_summary_statistics,
@@ -867,66 +1012,82 @@ def main() -> None:
         comparison_epsilon=POSTERIOR_COMPARISON_EPSILON
     )
     save_summary_set_outputs(
-        "Reduced set E",
-        SUMMARY_SET_INDICES["Reduced set E"],
+        REFERENCE_SUMMARY_SET_NAME,
+        REFERENCE_SUMMARY_SET_INDICES,
         simulated_summary_statistics,
         observed_summary_statistics,
-        reduced_set_e_distances,
+        reference_set_distances,
         simulated_parameters,
         acceptance_epsilon_list=acceptance_epsilon_list
     )
 
-    # save the full simulation results for future analysis (e.g. regression adjustment, ABC-MCMC)
-    reduced_set_e_indices = SUMMARY_SET_INDICES["Reduced set E"]
-    reduced_set_e_simulated_summaries = np.array(simulated_summary_statistics)[:, reduced_set_e_indices]
-    reduced_set_e_observed_summary = np.array(observed_summary_statistics)[list(reduced_set_e_indices)]
-    reduced_set_e_summary_mu = reduced_set_e_simulated_summaries.mean(axis=0)
-    reduced_set_e_summary_sigma = reduced_set_e_simulated_summaries.std(axis=0)
-    reduced_set_e_zero_sigma_mask = reduced_set_e_summary_sigma == 0
-    reduced_set_e_safe_sigma = reduced_set_e_summary_sigma.copy()
-    reduced_set_e_safe_sigma[reduced_set_e_zero_sigma_mask] = 1.0
-    reduced_set_e_standardized_observed = (
-        reduced_set_e_observed_summary - reduced_set_e_summary_mu
-    ) / reduced_set_e_safe_sigma
-    reduced_set_e_standardized_observed[reduced_set_e_zero_sigma_mask] = 0.0
-    reduced_set_e_distances, reduced_set_e_finite_mask, reduced_set_e_finite_distances = get_finite_distance_support(
-        reduced_set_e_distances
+    # save the chosen reference-summary calibration for downstream methods
+    reference_indices = REFERENCE_SUMMARY_SET_INDICES
+    reference_simulated_summaries = np.array(simulated_summary_statistics)[:, reference_indices]
+    reference_observed_summary = np.array(observed_summary_statistics)[list(reference_indices)]
+    reference_summary_mu = reference_simulated_summaries.mean(axis=0)
+    reference_summary_sigma = reference_simulated_summaries.std(axis=0)
+    reference_zero_sigma_mask = reference_summary_sigma == 0
+    reference_safe_sigma = reference_summary_sigma.copy()
+    reference_safe_sigma[reference_zero_sigma_mask] = 1.0
+    reference_standardized_observed = (
+        reference_observed_summary - reference_summary_mu
+    ) / reference_safe_sigma
+    reference_standardized_observed[reference_zero_sigma_mask] = 0.0
+    reference_distances, reference_finite_mask, reference_finite_distances = get_finite_distance_support(
+        reference_set_distances
     )
-    reduced_set_e_distance_threshold = np.quantile(
-        reduced_set_e_finite_distances,
+    reference_distance_threshold = np.quantile(
+        reference_finite_distances,
         POSTERIOR_COMPARISON_EPSILON
     )
-    reduced_set_e_accepted_idx = reduced_set_e_finite_mask & (
-        reduced_set_e_distances <= reduced_set_e_distance_threshold
+    reference_accepted_idx = reference_finite_mask & (
+        reference_distances <= reference_distance_threshold
     )
-    accepted_summaries = reduced_set_e_simulated_summaries[reduced_set_e_accepted_idx]
-    accepted_parameters = np.array(simulated_parameters)[reduced_set_e_accepted_idx]
-    accepted_distances = reduced_set_e_distances[reduced_set_e_accepted_idx]
+    accepted_summaries = reference_simulated_summaries[reference_accepted_idx]
+    accepted_parameters = np.array(simulated_parameters)[reference_accepted_idx]
+    accepted_distances = reference_distances[reference_accepted_idx]
     if accepted_parameters.shape[0] == 0:
-        raise ValueError("Reduced set E rejection run produced no accepted samples at ε=0.01.")
+        raise ValueError(
+            f"{REFERENCE_SUMMARY_SET_NAME} rejection run produced no accepted samples "
+            f"at ε={POSTERIOR_COMPARISON_EPSILON:.2f}."
+        )
     np.savez(
-        f"{REGRESSION_ADJUSTMENT_DIR}/abc_rejection_output.npz",
+        REFERENCE_RESULTS_PATH,
         reference_parameters=np.array(simulated_parameters),
-        reference_summaries=reduced_set_e_simulated_summaries,
-        distances=reduced_set_e_distances,
+        reference_summaries=reference_simulated_summaries,
+        distances=reference_distances,
         accepted_parameters=accepted_parameters,
         accepted_summaries=accepted_summaries,
-        observed_summary=reduced_set_e_observed_summary,
-        standardized_observed=reduced_set_e_standardized_observed,
-        summary_mu=reduced_set_e_summary_mu,
-        summary_sigma=reduced_set_e_safe_sigma,
-        zero_sigma_mask=reduced_set_e_zero_sigma_mask,
+        observed_summary=reference_observed_summary,
+        standardized_observed=reference_standardized_observed,
+        summary_mu=reference_summary_mu,
+        summary_sigma=reference_safe_sigma,
+        zero_sigma_mask=reference_zero_sigma_mask,
         accepted_distances=accepted_distances,
         acceptance_epsilon=POSTERIOR_COMPARISON_EPSILON,
-        distance_threshold=reduced_set_e_distance_threshold,
+        distance_threshold=reference_distance_threshold,
         initial_parameters=accepted_parameters[0],
         initial_summary=accepted_summaries[0],
         initial_distance=accepted_distances[0],
-        summary_indices=np.array(reduced_set_e_indices),
-        summary_names=np.array([summary_statistics_name[idx] for idx in reduced_set_e_indices], dtype=object),
-        summary_set_name=np.array("Reduced set E", dtype=object),
+        summary_indices=np.array(reference_indices),
+        summary_names=np.array([summary_statistics_name[idx] for idx in reference_indices], dtype=object),
+        summary_set_name=np.array(REFERENCE_SUMMARY_SET_NAME, dtype=object),
     )
-
+    
+    ########################################## Added summary set selection analysis #######################################################
+    spread_df = compute_posterior_spread_table(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+    )
+    print("\n[Summary set spread table]")
+    print(spread_df.to_string(index=False))
+    
+    plot_posterior_spread_heatmap(
+        spread_df,
+        SUMMARY_SET_STUDY_DIR / f"posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png"
+    )
 ###############
 #
 #

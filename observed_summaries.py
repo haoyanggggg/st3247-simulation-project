@@ -11,7 +11,7 @@ scripts from the empirical epidemic and network datasets stored in `data/`.
 The workflow:
 1. Load the observed infection, rewiring, and degree-histogram datasets
 2. Clean and reshape the raw tables when needed
-3. Compute six observed summary statistics
+3. Compute eight observed summary statistics
 4. Return them in the same order used by the simulation-based ABC scripts
 
 Key Design Choices
@@ -27,6 +27,8 @@ Key Design Choices
     * Early rewiring growth rate
     * Degree variance
     * Late infection decay rate
+    * Rewiring per infection
+    * Infection peak width at half maximum
 
 - Main interface:
     `get_obs_summaries()`
@@ -55,13 +57,16 @@ REWIRE_COUNT = 'rewire_count'
 DEGREE = 'degree'
 COUNT = 'count'
 R = 40
+EPSILON = 1e-8
 SUMMARY_STATISTICS = [
     'mean_max_infection_frac',
     'mean_time_infection_frac',
-    'mean_late_infection_frac_slope',
     'mean_infection_frac_slope',
     'mean_rewire_count_slope',
-    'degree_var'
+    'degree_var',
+    'mean_late_infection_frac_slope',
+    'mean_rewiring_per_infection',
+    'mean_peak_width_half_max',
 ]
 # HELPER FUNCTIONS
 def get_data():
@@ -81,7 +86,6 @@ def clean_data(infected_ts:pd.DataFrame, rewire_ts:pd.DataFrame, degree_count_ts
     rewire_wide_ts = pivot_df(rewire_ts, REWIRE_COUNT)
     degree_count_wide_ts = pivot_df(degree_count_ts, COUNT, DEGREE)
     return infected_wide_ts, rewire_wide_ts, degree_count_wide_ts
-
 
 def summary_statistic_3_early_growth_rate_exploration(
         infected_ts: pd.DataFrame,
@@ -235,6 +239,27 @@ def get_summary_statistic_6(infected_ts:pd.DataFrame) -> float:
     mean_late_infection_frac_slope = np.mean(late_infection_frac_slopes)
     return mean_late_infection_frac_slope
 
+# SUMMARY STATISTIC 7: Rewiring per infection INFORMS RHO
+def get_summary_statistic_7(infected_ts: pd.DataFrame, rewire_ts: pd.DataFrame) -> float:
+    total_rewire_count_per_replicate = rewire_ts.groupby(REPLICATE_ID)[REWIRE_COUNT].sum()
+    total_infection_per_replicate = infected_ts.groupby(REPLICATE_ID)[INFECTED_FRAC].sum()
+    rewiring_per_infection = total_rewire_count_per_replicate / (total_infection_per_replicate + EPSILON)
+    return float(rewiring_per_infection.mean())
+
+# SUMMARY STATISTIC 8: Infection peak width at half maximum INFORMS BETA/GAMMA
+def get_summary_statistic_8(infected_ts: pd.DataFrame) -> float:
+    def per_rep(g):
+        ts = g.sort_values(TIME)[INFECTED_FRAC].values
+        peak_val = ts.max()
+        half_peak = 0.5 * peak_val
+        above_half = np.where(ts >= half_peak)[0]
+        if len(above_half) >= 2:
+            return int(above_half[-1] - above_half[0])
+        return 0
+
+    peak_widths = infected_ts.groupby(REPLICATE_ID).apply(per_rep)
+    return float(peak_widths.mean())
+
 # EXPLORATION SECION (OPTIONAL)
 
 # summary_statistic_3_early_growth_rate_exploration(infected_wide_ts)
@@ -253,7 +278,9 @@ def get_obs_summaries(to_print:bool=False) -> list:
         get_summary_statistic_3(infected_ts),
         get_summary_statistic_4(rewire_ts),
         get_summary_statistic_5(degree_count_ts),
-        get_summary_statistic_6(infected_ts)
+        get_summary_statistic_6(infected_ts),
+        get_summary_statistic_7(infected_ts, rewire_ts),
+        get_summary_statistic_8(infected_ts),
     ]
     max_length = max(len(name) for name in SUMMARY_STATISTICS)
     if to_print:        

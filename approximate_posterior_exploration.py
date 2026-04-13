@@ -1,25 +1,26 @@
 """
-Pairplot for Rich Set vs Reduced Set E
+Pairplot for Rich Set vs the chosen reference reduced set
 
 Date: 2026-04-11
 
 Description
 -----------
 This script loads the latest `ε = 0.01` posterior samples from the rich summary
-set and from Reduced set E, then visualizes their posterior structure using
+set and from the chosen reduced reference set, then visualizes their posterior
+structure using
 separate seaborn pairplots.
 
 The workflow:
 1. Locate the latest rich-set posterior CSV at `ε = 0.01`
-2. Locate the latest Reduced set E posterior CSV at `ε = 0.01`
+2. Locate the latest reduced-reference posterior CSV at `ε = 0.01`
 3. Load both posterior sample tables
 4. Produce one pairplot for the rich set
-5. Produce one pairplot for Reduced set E
+5. Produce one pairplot for the reduced-reference set
 
 Key Design Choices
 ------------------
 - Comparison target:
-    Rich summary set versus Reduced set E
+    Rich summary set versus the chosen reduced reference set
 
 - Epsilon selection:
     Fixed at `ε = 0.01`
@@ -30,7 +31,7 @@ Key Design Choices
 Outputs
 -------
 - One pairplot for the rich-set posterior samples
-- One pairplot for the Reduced set E posterior samples
+- One pairplot for the reduced-reference posterior samples
 
 Notes
 -----
@@ -45,11 +46,16 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from abc_rejection import PARAM_ESTIMATES_DIR, SUMMARY_SET_STUDY_DIR
+from abc_rejection import (
+    PARAM_ESTIMATES_DIR,
+    REFERENCE_SUMMARY_SET_NAME,
+    REFERENCE_SUMMARY_SET_SLUG,
+    SUMMARY_SET_STUDY_DIR,
+)
 
 
 RICH_SET_PARAM_DIR = PARAM_ESTIMATES_DIR
-REDUCED_SET_E_PARAM_DIR = SUMMARY_SET_STUDY_DIR / "reduced_set_e" / "param_estimates"
+REFERENCE_SET_PARAM_DIR = SUMMARY_SET_STUDY_DIR / REFERENCE_SUMMARY_SET_SLUG / "param_estimates"
 TARGET_EPSILON_SLUG = "0.0100"
 
 
@@ -80,19 +86,19 @@ def main() -> None:
         f"abc-basic_eps-{TARGET_EPSILON_SLUG}_*.csv",
         "rich set",
     )
-    reduced_set_e_csv_path = get_latest_matching_csv(
-        REDUCED_SET_E_PARAM_DIR,
-        f"reduced_set_e_abc-basic_eps-{TARGET_EPSILON_SLUG}_*.csv",
-        "Reduced set E",
+    reference_set_csv_path = get_latest_matching_csv(
+        REFERENCE_SET_PARAM_DIR,
+        f"{REFERENCE_SUMMARY_SET_SLUG}_abc-basic_eps-{TARGET_EPSILON_SLUG}_*.csv",
+        REFERENCE_SUMMARY_SET_NAME,
     )
 
     rich_set_df = pd.read_csv(rich_set_csv_path)
-    reduced_set_e_df = pd.read_csv(reduced_set_e_csv_path)
+    reference_set_df = pd.read_csv(reference_set_csv_path)
 
     print(f"Loaded rich-set posterior samples from: {rich_set_csv_path}")
-    print(f"Loaded Reduced set E posterior samples from: {reduced_set_e_csv_path}")
+    print(f"Loaded {REFERENCE_SUMMARY_SET_NAME} posterior samples from: {reference_set_csv_path}")
     plot_posterior_pairplot(rich_set_df, "Rich set posterior samples", "#1f77b4")
-    plot_posterior_pairplot(reduced_set_e_df, "Reduced set E posterior samples", "#d62728")
+    plot_posterior_pairplot(reference_set_df, f"{REFERENCE_SUMMARY_SET_NAME} posterior samples", "#d62728")
     plt.show()
 
 
