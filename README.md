@@ -6,6 +6,8 @@ The project estimates the posterior of `(beta, gamma, rho)` using:
 - basic ABC rejection
 - regression-adjusted ABC
 - ABC-MCMC calibrated from the saved rejection run
+- Sequential Monte Carlo ABC (SMC-ABC)
+- Synthetic Likelihood MCMC (SL-MCMC)
 
 ## Project Layout
 
@@ -19,16 +21,23 @@ SBI_infection/
 │     └─ abc_rejection_output.npz
 ├─ outputs/
 │  ├─ basic_abc/
-│  │  ├─ param_estimates/
-│  │  ├─ sanity_check/
-│  │  └─ summary_set_study/
 │  ├─ abc_mcmc/
-│  └─ regression_adjustment/
+│  ├─ regression_adjustment/
+│  ├─ smc_abc/
+│  ├─ smc_abc_recovery/
+│  ├─ sl_mcmc_recovery/
+│  └─ synthetic_likelihood_mcmc/
 ├─ simulator.py
+├─ simulator_optimised.py
 ├─ observed_summaries.py
 ├─ abc_rejection.py
 ├─ abc_rejection_regression.py
 ├─ abc_mcmc.py
+├─ smc_abc.py
+├─ synthetic_likelihood_mcmc.py
+├─ synthetic_likelihood_diagnostics.py
+├─ synthetic_truth_recovery_sl.py
+├─ synthetic_recovery_smc_abc.py
 └─ approximate_posterior_exploration.py
 ```
 
@@ -44,47 +53,50 @@ Required Python packages:
 - `tqdm`
 - `scikit-learn`
 - `seaborn`
+- `scipy`
+- `numba` (for optimized simulator)
 
 ## Main Scripts
 
 `simulator.py`  
-Simulates one adaptive-network SIR epidemic. Optimized from original simulator.py script obtained from 
-"https://github.com/alexxthiery/SBI_infection"
+Simulates one adaptive-network SIR epidemic.
+
+`simulator_optimised.py`  
+Highly optimized version of the simulator using `numba` and parallel-ready logic.
 
 `observed_summaries.py`  
-Computes the observed summary statistics from the provided data. Function is used in `abc_rejection.py`
+Computes the observed summary statistics from the provided data.
 
 `abc_rejection.py`  
-Runs the baseline basic ABC rejection pipeline. It:
-
-- simulates `N_sim = 30,000` prior draws
-- computes six summary statistics
-- standardizes summaries using simulation-based scaling
-- accepts posterior samples using euclidean distance
-
-Additionally
-- performs posterior sample distribution comparison for multiple `ε` values
-- performs the summary subset study to obtain minimal summary statistics
-- writes the saved reference calibration used later by `abc_rejection_regression.py` and `abc_mcmc.py`
+Runs the baseline basic ABC rejection pipeline.
 
 `abc_rejection_regression.py`  
-Applies Beaumont-style local linear regression adjustment to the accepted rejection samples.
+Applies Beaumont-style local linear regression adjustment.
 
 `abc_mcmc.py`  
-Runs ABC-MCMC using chosen `Reduced set E` summary statistics and loads the calibration file produced by `abc_rejection.py`.  
-The current setup uses:
+Runs ABC-MCMC using the chosen reference summary set.
 
-- `N_proposals = 30,000`
-- `N_mcmc = 30,001` stored chain states
-- `burn_in = 3,000`
+`smc_abc.py`  
+Implements Sequential Monte Carlo ABC (Population Monte Carlo ABC). It produces stage-by-stage progression and comparison plots.
+
+`synthetic_likelihood_mcmc.py`  
+Implements Synthetic Likelihood MCMC (Wood, 2010). Approximates the summary likelihood with a multivariate Gaussian. Optimized with multiprocessing.
+
+`synthetic_likelihood_diagnostics.py`  
+Performs the Assumption Check (normality of summaries) for the SL methodology.
+
+`synthetic_truth_recovery_sl.py`  
+Performs a synthetic-truth recovery run using the SL-MCMC pipeline.
+
+`synthetic_recovery_smc_abc.py`  
+Performs a synthetic-truth recovery run using the SMC-ABC pipeline.
 
 `approximate_posterior_exploration.py`  
-Loads the latest `ε = 0.01` posterior CSVs for the rich summary set and Reduced
-set E, then produces separate color-coded seaborn pairplots for visual comparison.
+Produces separate color-coded seaborn pairplots for visual comparison.
 
 ## Summary Statistics
 
-The full model uses six summaries:
+The full model uses eight summaries:
 
 1. Max infection fraction
 2. Time to peak
@@ -92,59 +104,51 @@ The full model uses six summaries:
 4. Early growth rate of rewiring
 5. Variance structure of degree counts
 6. Late decay rate of infection
+7. Rewiring per infection
+8. Infection peak width at half maximum
 
-The summary-set comparison study in `abc_rejection.py` compares the full rich set with reduced sets A-F.  
-Subsequent algorithms uses `Reduced set E`.
+The summary-set comparison study in `abc_rejection.py` compares the full rich set with reduced sets A-I.  
+Subsequent algorithms use `Reduced set I`.
 
 ## Recommended Run Order
 
 1. Run basic rejection ABC:
-
 ```powershell
 py abc_rejection.py
 ```
 
-This produces:
-
-- `outputs/basic_abc/param_estimates/`
-- `outputs/basic_abc/sanity_check/`
-- `outputs/basic_abc/summary_set_study/`
-- `data/intermediate/abc_rejection_output.npz`
-
 2. Run regression adjustment:
-
 ```powershell
 py abc_rejection_regression.py
 ```
 
-This reads `data/intermediate/abc_rejection_output.npz` and writes to:
-
-- `outputs/regression_adjustment/plots/`
-- `outputs/regression_adjustment/param_estimates/`
-
 3. Run ABC-MCMC:
-
 ```powershell
 py abc_mcmc.py
 ```
 
-This requires `data/intermediate/abc_rejection_output.npz` from step 1 and writes to:
+4. Run SMC-ABC:
+```powershell
+py smc_abc.py
+```
 
-- `outputs/abc_mcmc/plots/`
-- `outputs/abc_mcmc/param_estimates/`
-- `outputs/abc_mcmc/abc_mcmc_chain.npz`
-- `outputs/abc_mcmc/abc_mcmc_diagnostics.csv`
+5. Run SMC-ABC recovery:
+```powershell
+py synthetic_recovery_smc_abc.py
+```
 
-NOTE: longer runtime due to dependent markov chain updates, unable to parallelize
+6. Run Synthetic Likelihood MCMC:
+```powershell
+py synthetic_likelihood_mcmc.py
+```
 
-4. Optional: explore the latest `ε = 0.01` rich-set and Reduced set E posteriors visually:
+7. Run SL-MCMC diagnostics and recovery:
+```powershell
+py synthetic_likelihood_diagnostics.py
+py synthetic_truth_recovery_sl.py
+```
 
+8. Optional: explore posteriors visually:
 ```powershell
 py approximate_posterior_exploration.py
 ```
-
-## Additional Notes
-
-- The rejection and MCMC comparison is designed to be fair: `abc_mcmc.py` loads the same `Reduced set E` scaling and `ε` threshold saved by `abc_rejection.py`.
-- If you change the rejection setup in `abc_rejection.py`, rerun it before running extension algorithms like `abc_rejection_regression.py` or `abc_mcmc.py`.
-- `simulator.py` is the base simulator and should remain stable across inference scripts.

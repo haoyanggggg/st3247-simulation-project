@@ -859,7 +859,6 @@ def plot_posterior_comparison(reference_posterior: np.ndarray,
             dpi=200,
             bbox_inches="tight",
         )
-        plt.show()
         plt.close()
 
 
@@ -892,7 +891,6 @@ def plot_stage_progression(stage_populations: list[dict],
             dpi=200,
             bbox_inches="tight",
         )
-        plt.show()
         plt.close()
 
 

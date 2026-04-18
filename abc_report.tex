@@ -382,6 +382,89 @@ The right-column progression plots in Figure~\ref{fig:smc-results} show how the 
 
 Taken together, the SMC results reinforce the same inferential conclusions seen earlier from rejection ABC and ABC-MCMC. Sequential tightening of the distance threshold does not materially shift the posterior center, but it confirms that the posterior structure is stable under a different sampling mechanism. The main practical gain from SMC-ABC in this setting is therefore efficiency in reaching smaller distance thresholds while preserving the same qualitative conclusions: $\beta$ and $\gamma$ are moderately well pinned down, whereas $\rho$ remains the least precisely identified parameter.
 
+\subsubsection{Synthetic Truth Recovery}
+
+To validate the reliability of the SMC-ABC pipeline, we performed a synthetic-truth recovery run implemented in \texttt{synthetic\_recovery\_smc\_abc.py}. In this experiment, the "observed" data is replaced by a single synthetic realization generated from known ground-truth parameters:
+\[
+\theta^* = (\beta^*, \gamma^*, \rho^*) = (0.25, 0.08, 0.40).
+\]
+This allows us to evaluate whether the posterior distribution correctly covers the true parameter values under the same summary-statistic configuration (Reduced set I) used throughout the report.
+
+The methodology follows the standard SMC-ABC workflow, with one additional step: the initial distance threshold is re-calibrated relative to the new synthetic target. Specifically, we recompute the distances of all reference simulations to the synthetic summary vector and set the stage-1 threshold to the $10\%$ quantile of these new distances. The sequential updates then tighten this threshold adaptively across four stages.
+
+The recovery diagnostics in \texttt{outputs/smc\_abc\_recovery/recovery\_diagnostics.csv} show that the algorithm converged through the adaptive distance schedule
+\[
+(0.9664,\ 0.7451,\ 0.5550,\ 0.4670),
+\]
+maintaining a robust effective sample size ($ESS \approx 277$) and a workable final acceptance rate of $6.08\%$.
+
+Figure~\ref{fig:recovery-results} presents the recovery posteriors. In all three panels, the true parameter value (marked by the \textcolor{red}{red dashed line}) lies well within the high-density region of the SMC-ABC posterior.
+For $\beta$ and $\gamma$, the posterior is relatively concentrated around the truth, with means of $0.2183$ and $0.0818$ respectively. For $\rho$, while the posterior is broader, the true value of $0.40$ is clearly captured within the main mass of the distribution (posterior mean $0.3582$).
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[t]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{outputs/smc_abc_recovery/plots/recovery_beta.png}
+    \caption{$\beta$ recovery.}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{outputs/smc_abc_recovery/plots/recovery_gamma.png}
+    \caption{$\gamma$ recovery.}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{outputs/smc_abc_recovery/plots/recovery_rho.png}
+    \caption{$\rho$ recovery.}
+\end{subfigure}
+\caption{Synthetic truth recovery results. The \textcolor{red}{red dashed lines} indicate the true parameter values $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ used to generate the synthetic observed data.}
+\label{fig:recovery-results}
+\end{figure}
+
+The success of this recovery run provides empirical evidence that the current Reduced set I summary statistics are informative for the model parameters and that the SMC-ABC pipeline is capable of producing a posterior that is consistent with the ground truth. This increases our confidence in the inferences drawn from the actual observed data.
+
+\subsection{Synthetic Likelihood MCMC}
+
+The final extension is the implementation of Synthetic Likelihood MCMC (SL-MCMC), based on the methodology of \citet{wood2010}. Unlike ABC methods that rely on a distance-based kernel, SL-MCMC approximates the likelihood of the summary statistics $s$ using a multivariate Gaussian distribution:
+\[
+\log L_{SL}(\theta) = -\frac{1}{2} \left[ \log |\Sigma(\theta)| + (s_{\text{obs}} - \mu(\theta))^\top \Sigma(\theta)^{-1} (s_{\text{obs}} - \mu(\theta)) \right]
+\]
+where $\mu(\theta)$ and $\Sigma(\theta)$ are the mean and covariance matrix of the summaries estimated from simulations at parameter $\theta$. In our implementation, we use $M=30$ simulations per step and apply Ledoit-Wolf shrinkage to regularize the covariance matrix, ensuring numerical stability even when the number of simulations is relatively small. To handle the computational intensity, the pipeline is highly optimized using \texttt{numba} for the SIR simulator and \texttt{multiprocessing} for parallel simulation execution.
+
+\subsubsection{Assumption Check: Normality of Summaries}
+
+The core assumption of SL-MCMC is that the summary statistics follow a multivariate Gaussian distribution. We validated this by simulating $500$ realizations at the posterior mean. Figure~\ref{fig:sl-normality} shows the standardized histograms for the Reduced set I summaries. While some summaries (like Max Infection) exhibit slight skewness, the majority align well with the Normal PDF overlays, and the Shapiro-Wilk p-values suggest that the Gaussian approximation is a reasonable surrogate for the true intractable likelihood in this model.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{outputs/synthetic_likelihood_mcmc/diagnostics/assumption_check_normality.png}
+\caption{Assumption check for Synthetic Likelihood. Standardized histograms of Reduced set I summaries simulated at the posterior mean show reasonable agreement with the multivariate Gaussian assumption.}
+\label{fig:sl-normality}
+\end{figure}
+
+\subsubsection{Posterior Comparison and Recovery}
+
+The SL-MCMC was run for $30{,}000$ iterations with a $5{,}000$ iteration burn-in. Figure~\ref{fig:sl-comparison} compares the resulting posterior with the basic ABC rejection ($\epsilon=0.01$) results. The Synthetic Likelihood methodology yields notably sharper and more concentrated posteriors for all three parameters. This increased precision is expected, as SL leverages the full distributional information (mean and covariance) of the summaries rather than collapsing them into a single scalar distance.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{outputs/synthetic_likelihood_mcmc/plots/synthetic_likelihood_vs_basic_abc_comparison.png}
+\caption{Posterior comparison: Basic ABC ($\epsilon=0.01$) versus Synthetic Likelihood MCMC. SL-MCMC provides tighter marginal posteriors, particularly for $\beta$ and $\gamma$.}
+\label{fig:sl-comparison}
+\end{figure}
+
+Finally, we performed a synthetic-truth recovery run to evaluate the accuracy of the SL pipeline. Using the same ground truth $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ as in the SMC-ABC experiment, the SL-MCMC posterior correctly centered around the known values (Figure~\ref{fig:sl-recovery}). The "mean of accepted values" (ground truth) lies squarely within the high-density regions, confirming that the SL-MCMC pipeline can accurately recover the model parameters from known data.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{outputs/sl_mcmc_recovery/plots/synthetic_truth_recovery_sl.png}
+\caption{Synthetic truth recovery for SL-MCMC. The \textcolor{red}{red dashed lines} ("mean of accepted values") represent the ground truth parameters used to generate the synthetic target.}
+\label{fig:sl-recovery}
+\end{figure}
+
 \begin{figure}[H]
 \centering
 \begin{subfigure}[t]{0.48\textwidth}
