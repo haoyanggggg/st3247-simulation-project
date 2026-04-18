@@ -49,13 +49,13 @@ Notes
 - Results depend on choice of summaries and prior ranges.
 """
 
-###############
+#####################
 #
 #
 # 1. IMPORT LIBRARIES
 #
 #
-###############
+#####################
 import numpy as np
 import pandas as pd
 from simulator import simulate
@@ -67,15 +67,16 @@ import os
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+import re
 
 
-###############
+##########################
 #
 #
 # 2. GLOBAL VARIABLES
 #
 #
-###############
+###########################
 N = 200
 N_sim = 100_000 # with threshold of 1%, we will have 300 accepted samples for posterior analysis
 degree_counts_max = 30 + 1
@@ -188,23 +189,226 @@ SUMMARY_SET_INDICES = {
 
 }
 
-# compare between A, C, I, Rich sets to see how the presence/absence of certain summaries affects the posterior, and whether the effect is consistent with our understanding of which summaries inform which parameters
-SUMMARY_SET_COMPARISONS = (
-    ("Rich set", "Reduced set A"),
-    ("Rich set", "Reduced set B"),
-    ("Rich set", "Reduced set C"),
-    ("Rich set", "Reduced set D"),
-    ("Rich set", "Reduced set E"),
-    ("Rich set", "Reduced set F"),
-    ("Rich set", "Reduced set G"),
-    ("Rich set", "Reduced set H"),
-    ("Rich set", "Reduced set I"),
-)
-
 REFERENCE_SUMMARY_SET_NAME = "Reduced set I"
 REFERENCE_SUMMARY_SET_INDICES = SUMMARY_SET_INDICES[REFERENCE_SUMMARY_SET_NAME]
 REFERENCE_SUMMARY_SET_SLUG = REFERENCE_SUMMARY_SET_NAME.lower().replace(" ", "_")
 PARAMETER_NAMES = ("beta", "gamma", "rho")
+PARAMETER_PRIOR_BOUNDS = (
+    (0.05, 0.5),
+    (0.02, 0.2),
+    (0.0, 0.8),
+)
+
+MAX_INFECTION_IDX = 0
+TIME_TO_PEAK_IDX = 1
+EARLY_INFECTION_GROWTH_IDX = 2
+EARLY_REWIRE_COUNT_IDX = 3
+DEGREE_VARIANCE_IDX = 4
+LATE_INFECTION_DECAY_IDX = 5
+REWIRING_PER_INFECTION_IDX = 6
+PEAK_WIDTH_HALF_MAX_IDX = 7
+
+# GAMMA (weak) -> A1, A2
+# GAMMA (strong) -> A3
+# GAMMA (stable) -> A5
+
+# RHO (weak) -> B1,B2, B3
+# RHO (strongest) -> B4
+
+# BETA (weak) -> A1, A2
+# BETA (decent) -> A3
+# BETA (stable) -> A5
+
+# BETA, GAMMA, RHO (weak) -> C1
+# BETA, GAMMA, RHO (strong) -> C2 (tighter posteriors)
+# BETA, GAMMA, RHO (stable) -> C3, FULL RICH SET
+IDENTIFIABILITY_SUMMARY_SETS = {
+
+
+    #################################
+    #
+    # A: Beta, Gamma identifiability
+    #
+    # NOTE: BETA GAMMA weak interaction from individual 1.1, 1.2
+    #       BETA GAMMA best interaction from 1.3
+    #       BETA GAMMA stabilized interaction from 1.5 with additional summary stats LATE_INFECTION_DECAY_IDX 
+    #
+    #################################
+
+    # rejected lower beta, weak gamma
+    "A1 {Beta, Gamma}": (
+        MAX_INFECTION_IDX,
+    ),
+    
+    # rejected higher beta, weak gamma
+    "A2 {Beta, Gamma}": (
+        PEAK_WIDTH_HALF_MAX_IDX,
+    ),
+
+    # concentrated beta to 0.2, gamma BEST 0.75
+    "A3 {Beta, Gamma}": (
+        MAX_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX,
+    ),
+
+    # both beta and gamma stabilised from A3 with late infection decay
+    "A4 {Beta, Gamma}": (
+        MAX_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX,
+        LATE_INFECTION_DECAY_IDX,
+    ),
+
+    # NOTE: suggests that Late Infection Decay can possibly stabilize gamma
+    #       not using this, using A3 instead
+    
+    # rejected higher beta, mid gamma 
+    # "A5 {Beta, Gamma}": (
+    #     PEAK_WIDTH_HALF_MAX_IDX,
+    #     LATE_INFECTION_DECAY_IDX,
+    # ),
+    
+
+    # stabilized (time to peak ALONE little effect to existing summary stats)
+    # "A6 {Beta, Gamma}": (
+    #     MAX_INFECTION_IDX,
+    #     PEAK_WIDTH_HALF_MAX_IDX,
+    #     LATE_INFECTION_DECAY_IDX,
+    #     TIME_TO_PEAK_IDX, # beta
+    # ),
+    
+    # both beta and gamma stabilised from A3 with early infection growth + rejected high rho
+    # "A7 {Beta, Gamma}": (
+    #     MAX_INFECTION_IDX,
+    #     PEAK_WIDTH_HALF_MAX_IDX,
+    #     LATE_INFECTION_DECAY_IDX,
+    #     EARLY_INFECTION_GROWTH_IDX,
+    # ),
+    
+    ######################
+    #
+    # B: RHO IDENTIFIABILITY
+    #
+    ######################
+    # rho mean around 0.4
+    "B1 {Gamma, Rho}": (
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ),
+
+    # time to peak concentrates rho to 0.25 (better)
+    "B2 {Beta, Gamma, Rho}": (
+        TIME_TO_PEAK_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ), 
+
+    # rewiring count concentrates to 0.3 
+    "B3 {Beta, Gamma, Rho}": (
+        EARLY_INFECTION_GROWTH_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ),
+    # BEST rho concentrated to 0.32
+    "B4 {Gamma, Rho}": (
+        MAX_INFECTION_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ),
+
+    ############################
+    #
+    # C: Combined identifiability
+    #
+    #############################
+
+    # Balanced for beta gamma rho
+    "C1 {Beta, Gamma, Rho}": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+    ),
+    
+    # EXPECTED TO BE BEST FOR COMBINED 1.3 and 9.6 (Gamma, Rho lower variance)
+    # NOTE: Posteriors tighter for beta and gamma
+    "C2 {Beta, Gamma, Rho}": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX,
+
+        # does not have Early rewire count from reduced set I
+        # additional peak width
+    ),
+    # "C3: {Beta, Gamma, Rho} worse than 9.4, but more balanced overall, mid rho to 0.32": (
+    #     MAX_INFECTION_IDX,
+    #     PEAK_WIDTH_HALF_MAX_IDX,
+    #     DEGREE_VARIANCE_IDX,
+    #     REWIRING_PER_INFECTION_IDX,
+    # ),
+    
+
+    # worse than B4 and C1, mid rho with mean 0.3
+    # "C4: {Beta, Gamma, Rho}": (
+    #     MAX_INFECTION_IDX,
+    #     EARLY_INFECTION_GROWTH_IDX,
+    #     DEGREE_VARIANCE_IDX,
+    #     REWIRING_PER_INFECTION_IDX,
+    # ),
+
+    #  stabalising version of C1
+    # "C5 {Beta, Gamma, Rho}": (
+    #     MAX_INFECTION_IDX,
+    #     TIME_TO_PEAK_IDX,
+    #     EARLY_INFECTION_GROWTH_IDX,
+    #     DEGREE_VARIANCE_IDX,
+    #     REWIRING_PER_INFECTION_IDX,
+    # ),
+
+
+    # Stablilised of C2
+    "C3 {Beta, Gamma, Rho}": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX
+    ),
+
+    # Stablilised of C2
+    "FULL RICH SET {Beta, Gamma, Rho}": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        EARLY_INFECTION_GROWTH_IDX,
+        EARLY_REWIRE_COUNT_IDX,
+        DEGREE_VARIANCE_IDX,
+        LATE_INFECTION_DECAY_IDX,
+        REWIRING_PER_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX,
+    ),
+}
+IDENTIFIABILITY_COMPARISON_PAIRS = (
+    ("B4 {Gamma, Rho}", "FULL RICH SET {Beta, Gamma, Rho}"),
+    ("A4 {Beta, Gamma}", "FULL RICH SET {Beta, Gamma, Rho}"),
+    ("C2 {Beta, Gamma, Rho}", "C3 {Beta, Gamma, Rho}"),
+    ("C2 {Beta, Gamma, Rho}", "FULL RICH SET {Beta, Gamma, Rho}"),
+)
+IDENTIFIABILITY_SPREAD_HEATMAP_PREFIXES = (
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "C1",
+    "C2",
+    "C3",
+    "FULL"
+)
 acceptance_epsilon_list = [0.005, 0.01, 0.03]
 POSTERIOR_COMPARISON_EPSILON = 0.01
 BASE_DIR = Path(__file__).resolve().parent
@@ -212,6 +416,7 @@ BASIC_ABC_DIR = BASE_DIR / "outputs" / "basic_abc"
 SANITY_CHECK_DIR = BASIC_ABC_DIR / "sanity_check"
 PARAM_ESTIMATES_DIR = BASIC_ABC_DIR / "param_estimates"
 SUMMARY_SET_STUDY_DIR = BASIC_ABC_DIR / "summary_set_study"
+IDENTIFIABILITY_POSTERIOR_DIR = SUMMARY_SET_STUDY_DIR / "identifiability"
 REGRESSION_ADJUSTMENT_DIR = BASE_DIR / "data" / "intermediate"
 REFERENCE_RESULTS_PATH = REGRESSION_ADJUSTMENT_DIR / "abc_rejection_output.npz"
 PPC_DIR = BASIC_ABC_DIR / "posterior_predictive_checks"        # ADDED
@@ -658,7 +863,7 @@ def save_samples_and_plots(simulated_summary_statistics,
         plt.legend()
         plot_path = SANITY_CHECK_DIR / f"summary_{summary_statistics_name[i]}_overlay_eps_{timestamp}.png"
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        # plt.show()
         plt.close()
 
     # Save accepted parameters to CSV for each epsilon threshold
@@ -675,17 +880,17 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
                                     observed_summary_statistics,
                                     simulated_parameters,
                                     comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
-    """Plot rich-set posterior overlays against the requested reduced summary sets."""
+    """Plot the requested identifiability posterior comparisons."""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
     observed_summary_statistics = np.asarray(observed_summary_statistics, dtype=np.float64)
     simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
 
-    PARAM_ESTIMATES_DIR.mkdir(parents=True, exist_ok=True)
-    SUMMARY_SET_STUDY_DIR.mkdir(parents=True, exist_ok=True)
+    comparison_dir = IDENTIFIABILITY_POSTERIOR_DIR / "comparison_plots"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
 
     accepted_idx_by_set = {}
-    for summary_set_name, summary_indices in SUMMARY_SET_INDICES.items():
+    for summary_set_name, summary_indices in IDENTIFIABILITY_SUMMARY_SETS.items():
         distances = compute_distances_for_summary_set(
             simulated_summary_statistics,
             observed_summary_statistics,
@@ -696,25 +901,25 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
             [comparison_epsilon]
         )[comparison_epsilon]
 
-    for rich_set_name, reduced_set_name in SUMMARY_SET_COMPARISONS:
-        rich_parameters = simulated_parameters[accepted_idx_by_set[rich_set_name]]
-        reduced_parameters = simulated_parameters[accepted_idx_by_set[reduced_set_name]]
+    for left_set_name, right_set_name in IDENTIFIABILITY_COMPARISON_PAIRS:
+        left_parameters = simulated_parameters[accepted_idx_by_set[left_set_name]]
+        right_parameters = simulated_parameters[accepted_idx_by_set[right_set_name]]
 
         fig, axes = plt.subplots(1, len(PARAMETER_NAMES), figsize=(15, 4.5))
         for param_idx, (ax, param_name) in enumerate(zip(axes, PARAMETER_NAMES)):
             ax.hist(
-                rich_parameters[:, param_idx],
+                left_parameters[:, param_idx],
                 bins=30,
                 alpha=0.45,
                 density=True,
-                label=f"{rich_set_name} (n={rich_parameters.shape[0]})"
+                label=f"{left_set_name} (n={left_parameters.shape[0]})"
             )
             ax.hist(
-                reduced_parameters[:, param_idx],
+                right_parameters[:, param_idx],
                 bins=30,
                 alpha=0.45,
                 density=True,
-                label=f"{reduced_set_name} (n={reduced_parameters.shape[0]})"
+                label=f"{right_set_name} (n={right_parameters.shape[0]})"
             )
             ax.set_title(f"Posterior of {param_name}")
             ax.set_xlabel(param_name)
@@ -723,16 +928,16 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
 
         fig.suptitle(
             f"Posterior comparison at ε={comparison_epsilon:.3f}: "
-            f"{rich_set_name} vs {reduced_set_name}"
+            f"{left_set_name} vs {right_set_name}"
         )
         fig.tight_layout(rect=(0, 0, 1, 0.95))
 
         comparison_slug = (
-            f"{rich_set_name.lower().replace(' ', '_')}_vs_"
-            f"{reduced_set_name.lower().replace(' ', '_')}"
+            f"{make_safe_slug(left_set_name)}_vs_"
+            f"{make_safe_slug(right_set_name)}"
         )
         plot_path = (
-            SUMMARY_SET_STUDY_DIR  
+            comparison_dir
             / f"posterior_{comparison_slug}_eps-{comparison_epsilon:.4f}_{timestamp}.png"
         )
 
@@ -798,7 +1003,7 @@ def save_summary_set_outputs(summary_set_name,
             / f"{summary_set_slug}_summary_{summary_statistics_name[summary_idx]}_overlay_eps_{timestamp}.png"
         )
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        # plt.show()
         plt.close()
 
     for acceptance_epsilon in acceptance_epsilon_list:
@@ -828,16 +1033,22 @@ def save_summary_set_outputs(summary_set_name,
 def compute_posterior_spread_table(simulated_parameters,
                                    simulated_summary_statistics,
                                    observed_summary_statistics,
+                                   summary_sets=None,
                                    comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
     """
     For each summary set, compute normalized posterior std per parameter.
     Lower = tighter posterior = more informative summary set.
     """
     simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
-    prior_widths = np.array([0.5-0.05, 0.2-0.02, 0.8-0.0])  # beta, gamma, rho
+    if summary_sets is None:
+        summary_sets = SUMMARY_SET_INDICES
+    prior_widths = np.array(
+        [upper - lower for lower, upper in PARAMETER_PRIOR_BOUNDS],
+        dtype=np.float64
+    )
     
     rows = []
-    for set_name, indices in SUMMARY_SET_INDICES.items():
+    for set_name, indices in summary_sets.items():
         distances = compute_distances_for_summary_set(
             simulated_summary_statistics, observed_summary_statistics, indices
         )
@@ -864,6 +1075,7 @@ def compute_posterior_spread_table(simulated_parameters,
 def plot_posterior_spread_heatmap(spread_df, filename):
     """Heatmap: rows=summary sets, cols=parameters, values=normalized posterior std."""
     SUMMARY_SET_STUDY_DIR.mkdir(parents=True, exist_ok=True)
+    Path(filename).parent.mkdir(parents=True, exist_ok=True)
     
     matrix = spread_df.set_index("Summary set")[["β std (norm)", "γ std (norm)", "ρ std (norm)"]].values
     set_names = spread_df["Summary set"].tolist()
@@ -896,9 +1108,9 @@ def plot_posterior_spread_heatmap(spread_df, filename):
     ax.set_title(f"Posterior spread by summary set (ε={POSTERIOR_COMPARISON_EPSILON})")
     fig.tight_layout()
     fig.savefig(filename, dpi=300, bbox_inches='tight')
-    plt.show()
+    # plt.show()
     plt.close(fig)
-############################################### ADDED OVERLAY & JOINT #######################################################
+
 def plot_posterior_predictive_checks(simulated_summary_statistics,
                                      observed_summary_statistics,
                                      simulated_parameters,
@@ -1034,13 +1246,89 @@ def plot_posterior_predictive_checks(simulated_summary_statistics,
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     plot_path = PPC_DIR / f"ppc_all_observables_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    # plt.show()
     plt.close(fig)
+
+
+def get_accepted_posterior_for_summary_set(simulated_parameters,
+                                           simulated_summary_statistics,
+                                           observed_summary_statistics,
+                                           summary_set_name,
+                                           summary_indices,
+                                           comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """Return accepted posterior samples for one chosen summary-statistic set."""
+    simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
+    distances = compute_distances_for_summary_set(
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        summary_indices
+    )
+    accepted_idx = get_accepted_indices_by_epsilon(
+        distances,
+        [comparison_epsilon]
+    )[comparison_epsilon]
+    posterior = simulated_parameters[accepted_idx]
+    if posterior.shape[0] == 0:
+        raise ValueError(
+            f"{summary_set_name} produced no accepted samples at ε={comparison_epsilon:.3f}."
+        )
+    return posterior
+
+
+def make_safe_slug(value: str) -> str:
+    """Convert labels into Windows-safe filesystem slugs."""
+    slug = value.lower()
+    slug = re.sub(r'[<>:"/\\\\|?*]+', "", slug)
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    slug = slug.strip("_")
+    return slug or "plot"
+
+
+def get_selected_summary_sets(summary_sets: dict,
+                              name_prefixes: tuple[str, ...]) -> dict:
+    """Return ordered summary sets matching the requested name prefixes."""
+    selected_summary_sets = {}
+    for prefix in name_prefixes:
+        matched_name = next(
+            (name for name in summary_sets if name.startswith(prefix)),
+            None
+        )
+        if matched_name is None:
+            raise KeyError(f"Could not find summary set matching prefix '{prefix}'.")
+        selected_summary_sets[matched_name] = summary_sets[matched_name]
+    return selected_summary_sets
+
+
+def print_joint_posterior_correlations(posterior,
+                                       summary_set_name,
+                                       comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """Print Pearson correlations for the three parameter-pair marginals."""
+    correlation_pairs = (
+        (0, 1, "beta", "gamma"),
+        (0, 2, "beta", "rho"),
+        (1, 2, "gamma", "rho"),
+    )
+    print(f"\n[Joint posterior Pearson correlations: {summary_set_name}] ε={comparison_epsilon:.3f}")
+    for i, j, label_i, label_j in correlation_pairs:
+        x = posterior[:, i]
+        y = posterior[:, j]
+
+        if posterior.shape[0] < 2:
+            print(f"{label_i} vs {label_j}: undefined (fewer than 2 accepted samples)")
+            continue
+        if np.allclose(np.std(x), 0.0) or np.allclose(np.std(y), 0.0):
+            print(f"{label_i} vs {label_j}: undefined (zero posterior variance)")
+            continue
+
+        correlation = np.corrcoef(x, y)[0, 1]
+        print(f"{label_i} vs {label_j}: {correlation:.4f}")
 
 
 def plot_joint_posteriors(simulated_parameters,
                           simulated_summary_statistics,
                           observed_summary_statistics,
+                          summary_set_name=REFERENCE_SUMMARY_SET_NAME,
+                          summary_indices=REFERENCE_SUMMARY_SET_INDICES,
                           comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
     """
     Joint posterior scatter plots for parameter pairs.
@@ -1052,14 +1340,14 @@ def plot_joint_posteriors(simulated_parameters,
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     JOINT_POSTERIOR_DIR.mkdir(parents=True, exist_ok=True)
 
-    reference_distances = compute_distances_for_summary_set(
-        simulated_summary_statistics, observed_summary_statistics,
-        REFERENCE_SUMMARY_SET_INDICES
+    posterior = get_accepted_posterior_for_summary_set(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        summary_set_name,
+        summary_indices,
+        comparison_epsilon=comparison_epsilon,
     )
-    accepted_idx = get_accepted_indices_by_epsilon(
-        reference_distances, [comparison_epsilon]
-    )[comparison_epsilon]
-    posterior = np.asarray(simulated_parameters)[accepted_idx]
 
     pairs = [
         (0, 2, "beta", "rho",   "β vs ρ — both suppress via S-I edges"),
@@ -1099,14 +1387,21 @@ def plot_joint_posteriors(simulated_parameters,
         ax.legend(fontsize=7)
 
     fig.suptitle(
-        f"Joint posteriors — {REFERENCE_SUMMARY_SET_NAME} "
+        f"Joint posteriors — {summary_set_name} "
         f"(ε={comparison_epsilon}, n={posterior.shape[0]})"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    plot_path = JOINT_POSTERIOR_DIR / f"joint_posteriors_{timestamp}.png"
+    summary_set_slug = make_safe_slug(summary_set_name)
+    plot_path = JOINT_POSTERIOR_DIR / f"joint_posteriors_{summary_set_slug}_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    # plt.show()
     plt.close(fig)
+
+    print_joint_posterior_correlations(
+        posterior,
+        summary_set_name,
+        comparison_epsilon=comparison_epsilon,
+    )
 
 
 def plot_marginal_posteriors(simulated_parameters,
@@ -1133,12 +1428,11 @@ def plot_marginal_posteriors(simulated_parameters,
     )
     simulated_parameters = np.asarray(simulated_parameters)
 
-    prior_bounds = [(0.05, 0.5), (0.02, 0.2), (0.0, 0.8)]
     colors = ['steelblue', 'darkorange', 'forestgreen']
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
 
-    for param_idx, (ax, pname, bounds) in enumerate(zip(axes, PARAMETER_NAMES, prior_bounds)):
+    for param_idx, (ax, pname, bounds) in enumerate(zip(axes, PARAMETER_NAMES, PARAMETER_PRIOR_BOUNDS)):
         for eps, color in zip(sorted(acceptance_epsilon_list, reverse=True), colors):
             accepted = simulated_parameters[accepted_by_eps[eps]]
             ax.hist(accepted[:, param_idx], bins=30, density=True,
@@ -1160,9 +1454,87 @@ def plot_marginal_posteriors(simulated_parameters,
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     plot_path = MARGINAL_POSTERIOR_DIR / f"marginal_posteriors_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    # plt.show()
     plt.close(fig)
-############################################### END OF ADDITION #######################################################
+
+
+def plot_identifiability_posteriors(simulated_parameters,
+                                    simulated_summary_statistics,
+                                    observed_summary_statistics,
+                                    comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """
+    Plot marginal posteriors for targeted summary subsets to make identifiability explicit.
+
+    Each requested summary family gets its own 3-panel figure and includes the
+    uniform-prior density as a horizontal reference line for comparison.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    IDENTIFIABILITY_POSTERIOR_DIR.mkdir(parents=True, exist_ok=True)
+
+    simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
+    simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
+    observed_summary_statistics = np.asarray(observed_summary_statistics, dtype=np.float64)
+    colors = plt.cm.tab10.colors
+
+    for summary_set_idx, (summary_set_name, summary_indices) in enumerate(IDENTIFIABILITY_SUMMARY_SETS.items()):
+        plot_color = colors[summary_set_idx % len(colors)]
+        distances = compute_distances_for_summary_set(
+            simulated_summary_statistics,
+            observed_summary_statistics,
+            summary_indices
+        )
+        accepted_idx = get_accepted_indices_by_epsilon(
+            distances,
+            [comparison_epsilon]
+        )[comparison_epsilon]
+        posterior = simulated_parameters[accepted_idx]
+        if posterior.shape[0] == 0:
+            raise ValueError(
+                f"{summary_set_name} produced no accepted samples at ε={comparison_epsilon:.3f}."
+            )
+
+        fig, axes = plt.subplots(1, len(PARAMETER_NAMES), figsize=(15, 4.5))
+        for param_idx, (ax, pname, bounds) in enumerate(zip(axes, PARAMETER_NAMES, PARAMETER_PRIOR_BOUNDS)):
+            ax.hist(
+                posterior[:, param_idx],
+                bins=30,
+                density=True,
+                alpha=0.55,
+                color=plot_color,
+                label=f"Posterior (n={posterior.shape[0]})"
+            )
+
+            prior_density = 1.0 / (bounds[1] - bounds[0])
+            ax.axhline(
+                prior_density,
+                color='black',
+                linestyle='--',
+                linewidth=1.2,
+                label="Prior (uniform)"
+            )
+
+            ax.set_title(f"Posterior of {pname}")
+            ax.set_xlabel(pname)
+            ax.set_ylabel("Density")
+            ax.set_xlim(bounds)
+            ax.legend(fontsize=8)
+
+        summary_names = ", ".join(summary_statistics_name[idx] for idx in summary_indices)
+        fig.suptitle(
+            f"Identifiability posterior — {summary_set_name}\n"
+            f"Summaries: {summary_names}\n"
+            f"ε={comparison_epsilon:.3f}"
+        )
+        fig.tight_layout(rect=(0, 0, 1, 0.9))
+
+        summary_set_slug = make_safe_slug(summary_set_name)
+        plot_path = (
+            IDENTIFIABILITY_POSTERIOR_DIR
+            / f"identifiability_{summary_set_slug}_eps-{comparison_epsilon:.4f}_{timestamp}.png"
+        )
+        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close(fig)
 
 ###############
 #
@@ -1341,7 +1713,6 @@ def main() -> None:
         summary_set_name=np.array(REFERENCE_SUMMARY_SET_NAME, dtype=object),
     )
     
-    ########################################## Added summary set selection analysis #######################################################
     spread_df = compute_posterior_spread_table(
         simulated_parameters,
         simulated_summary_statistics,
@@ -1354,8 +1725,25 @@ def main() -> None:
         spread_df,
         SUMMARY_SET_STUDY_DIR / f"posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png"
     )
+    identifiability_summary_sets = get_selected_summary_sets(
+        IDENTIFIABILITY_SUMMARY_SETS,
+        IDENTIFIABILITY_SPREAD_HEATMAP_PREFIXES,
+    )
+    identifiability_spread_df = compute_posterior_spread_table(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        summary_sets=identifiability_summary_sets,
+    )
+    print("\n[Identifiability spread table]")
+    print(identifiability_spread_df.to_string(index=False))
+    plot_posterior_spread_heatmap(
+        identifiability_spread_df,
+        IDENTIFIABILITY_POSTERIOR_DIR / (
+            f"identifiability_posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png"
+        )
+    )
 
-    ########################################## Posterior predictive checks + joint posteriors #######################################################
     plot_posterior_predictive_checks(
         simulated_summary_statistics,
         observed_summary_statistics,
@@ -1371,6 +1759,19 @@ def main() -> None:
         observed_summary_statistics,
         comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
     )
+    rich_set_posterior = get_accepted_posterior_for_summary_set(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        "Rich set",
+        SUMMARY_SET_INDICES["Rich set"],
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+    )
+    print_joint_posterior_correlations(
+        rich_set_posterior,
+        "Rich set",
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+    )
 
     plot_marginal_posteriors(
         simulated_parameters,
@@ -1378,7 +1779,14 @@ def main() -> None:
         observed_summary_statistics,
         acceptance_epsilon_list=acceptance_epsilon_list,
     )
-    ############################################### END OF ADDITION #######################################################
+
+    plot_identifiability_posteriors(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+    )
+
 ###############
 #
 #
