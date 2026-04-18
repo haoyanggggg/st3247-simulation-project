@@ -214,6 +214,9 @@ PARAM_ESTIMATES_DIR = BASIC_ABC_DIR / "param_estimates"
 SUMMARY_SET_STUDY_DIR = BASIC_ABC_DIR / "summary_set_study"
 REGRESSION_ADJUSTMENT_DIR = BASE_DIR / "data" / "intermediate"
 REFERENCE_RESULTS_PATH = REGRESSION_ADJUSTMENT_DIR / "abc_rejection_output.npz"
+PPC_DIR = BASIC_ABC_DIR / "posterior_predictive_checks"        # ADDED
+JOINT_POSTERIOR_DIR = BASIC_ABC_DIR / "joint_posteriors"       # ADDED
+MARGINAL_POSTERIOR_DIR = BASIC_ABC_DIR / "marginal_posteriors" # ADDED
 
 early_time_window_min = 2
 early_time_window_max = 6 + 1
@@ -911,7 +914,6 @@ def plot_posterior_predictive_checks(simulated_summary_statistics,
     - Final degree histogram
     """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    PPC_DIR = BASIC_ABC_DIR / "posterior_predictive_checks"
     PPC_DIR.mkdir(parents=True, exist_ok=True)
 
     # Get accepted parameters from reference set
@@ -1048,8 +1050,7 @@ def plot_joint_posteriors(simulated_parameters,
     - beta vs gamma: jointly determine epidemic size/speed
     """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    JOINT_DIR = BASIC_ABC_DIR / "joint_posteriors"
-    JOINT_DIR.mkdir(parents=True, exist_ok=True)
+    JOINT_POSTERIOR_DIR.mkdir(parents=True, exist_ok=True)
 
     reference_distances = compute_distances_for_summary_set(
         simulated_summary_statistics, observed_summary_statistics,
@@ -1102,7 +1103,7 @@ def plot_joint_posteriors(simulated_parameters,
         f"(ε={comparison_epsilon}, n={posterior.shape[0]})"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    plot_path = JOINT_DIR / f"joint_posteriors_{timestamp}.png"
+    plot_path = JOINT_POSTERIOR_DIR / f"joint_posteriors_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.show()
     plt.close(fig)
@@ -1121,8 +1122,7 @@ def plot_marginal_posteriors(simulated_parameters,
         acceptance_epsilon_list = [0.005, 0.01, 0.03]
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    MARGINAL_DIR = BASIC_ABC_DIR / "marginal_posteriors"
-    MARGINAL_DIR.mkdir(parents=True, exist_ok=True)
+    MARGINAL_POSTERIOR_DIR.mkdir(parents=True, exist_ok=True)
 
     reference_distances = compute_distances_for_summary_set(
         simulated_summary_statistics, observed_summary_statistics,
@@ -1158,7 +1158,7 @@ def plot_marginal_posteriors(simulated_parameters,
 
     fig.suptitle(f"Marginal posteriors — {REFERENCE_SUMMARY_SET_NAME}")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    plot_path = MARGINAL_DIR / f"marginal_posteriors_{timestamp}.png"
+    plot_path = MARGINAL_POSTERIOR_DIR / f"marginal_posteriors_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.show()
     plt.close(fig)
