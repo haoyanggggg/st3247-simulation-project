@@ -49,6 +49,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+from time import perf_counter
 from tqdm import tqdm
 
 from simulator import simulate
@@ -73,6 +74,7 @@ from abc_rejection import (
     late_time_points_centered,
     late_time_points_denom,
 )
+from runtime_summary import write_runtime_summary
 
 
 ###############
@@ -306,6 +308,8 @@ def run_abc_mcmc(rng: np.random.Generator,
     chain_summaries = np.zeros((N_mcmc, len(SUMMARY_INDICES)), dtype=np.float64)
     distances = np.zeros(N_mcmc, dtype=np.float64)
     accepted_moves = np.zeros(N_mcmc, dtype=bool)
+    simulator_calls = 0
+    simulation_wall_clock_seconds = 0.0
 
     current_parameters = np.asarray(initial_parameters, dtype=np.float64).copy()
     current_summary = np.asarray(initial_summary, dtype=np.float64).copy()
@@ -323,11 +327,14 @@ def run_abc_mcmc(rng: np.random.Generator,
         )
 
         if in_prior_support(proposed_parameters):
+            simulator_calls += 1
+            simulation_runtime_start = perf_counter()
             proposed_summary = simulate_summary_statistics(
                 proposed_parameters,
                 rng,
                 simulation_context,
             )
+            simulation_wall_clock_seconds += perf_counter() - simulation_runtime_start
             proposed_distance = compute_distance(
                 proposed_summary,
                 standardized_observed,
@@ -354,6 +361,8 @@ def run_abc_mcmc(rng: np.random.Generator,
         "distances": distances,
         "accepted_moves": accepted_moves,
         "acceptance_rate": float(acceptance_rate),
+        "simulator_calls": int(simulator_calls),
+        "simulation_wall_clock_seconds": float(simulation_wall_clock_seconds),
     }
 
 
@@ -572,10 +581,21 @@ def main() -> None:
     save_chain_outputs(chain_results, reference_results)
     
     posterior_samples = get_posterior_samples(chain_results["chain"])
+    ess_by_parameter = {}
     print()
     for i, name in enumerate(PARAMETER_NAMES):
         ess = effective_sample_size(posterior_samples[:, i])
+        ess_by_parameter[name] = float(ess)
         print(f"{name}: ESS ≈ {ess:.1f} out of {len(posterior_samples)}\n")
+
+    write_runtime_summary(
+        method_name="abc_mcmc",
+        total_simulator_calls=int(chain_results["simulator_calls"]),
+        wall_clock_seconds=float(chain_results["simulation_wall_clock_seconds"]),
+        posterior_sample_size=int(posterior_samples.shape[0]),
+        acceptance_rate=float(chain_results["acceptance_rate"]),
+        ess=ess_by_parameter,
+    )
 
     print(f"\nSummary set: {SUMMARY_SET_NAME}")
     print(f"ABC threshold quantile: {reference_results['acceptance_epsilon']:.4f}")

@@ -1,5 +1,5 @@
 metric,value
-summary_set,Reduced set I
+summary_set,Reduced set J
 reference_simulations,100000
 reference_accepted_samples,1000
 mcmc_proposals,30000
@@ -7,6 +7,6 @@ mcmc_chain_states,30001
 burn_in,3000
 thinning,1
 acceptance_epsilon,0.01
-distance_threshold,0.5453428059852382
-acceptance_rate,0.1894
+distance_threshold,0.542309210169043
+acceptance_rate,0.1824
 posterior_sample_size,27001

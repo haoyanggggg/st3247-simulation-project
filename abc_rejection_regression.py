@@ -46,11 +46,41 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
+
 from abc_rejection import REFERENCE_RESULTS_PATH, REFERENCE_SUMMARY_SET_NAME
+from runtime_summary import RUNTIME_SUMMARY_PATH, write_runtime_summary
 
 REGRESSION_DIAGNOSTICS_DIR = "outputs/regression_adjustment"
 OVERLAY_EPSILONS = (0.01, 0.05, 0.10)
 DIAGNOSTIC_EPSILON = 0.01
+
+
+def load_basic_abc_runtime_metrics():
+    """
+    Load the already-recorded basic ABC runtime row so regression adjustment
+    inherits the same simulation budget in the combined CSV summary.
+    """
+    if not RUNTIME_SUMMARY_PATH.exists():
+        raise FileNotFoundError(
+            f"Missing runtime summary file: {RUNTIME_SUMMARY_PATH}. "
+            "Run abc_rejection.py first so abc_rejection_regression.py can reuse "
+            "the same simulation counts and wall-clock time."
+        )
+
+    runtime_df = pd.read_csv(RUNTIME_SUMMARY_PATH)
+    basic_rows = runtime_df.loc[runtime_df["method_name"] == "abc_rejection"]
+    if basic_rows.empty:
+        raise ValueError(
+            "outputs/runtime_summary.csv does not contain an abc_rejection row. "
+            "Run abc_rejection.py first so regression adjustment can reuse the "
+            "same simulation counts and wall-clock time."
+        )
+
+    basic_row = basic_rows.iloc[0]
+    return {
+        "total_simulator_calls": int(basic_row["total_simulator_calls"]),
+        "wall_clock_seconds": float(basic_row["wall_clock_seconds"]),
+    }
 
 def compute_weights(distances, epsilon):
     """
@@ -177,8 +207,20 @@ def plot_before_after(theta_accept, theta_adj, output_dir):
 
     for j, name in enumerate(param_names):
         plt.figure(figsize=(7, 4))
-        plt.hist(theta_accept[:, j], bins=30, density=True, alpha=0.5, label="Rejection ABC")
-        plt.hist(theta_adj[:, j], bins=30, density=True, alpha=0.5, label="Regression-adjusted ABC")
+        plt.hist(
+            theta_accept[:, j],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label=f"Basic ABC ({REFERENCE_SUMMARY_SET_NAME})",
+        )
+        plt.hist(
+            theta_adj[:, j],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="Regression-adjusted ABC",
+        )
         plt.xlabel(name)
         plt.ylabel("Density")
         plt.title(f"Posterior comparison: {name} ({REFERENCE_SUMMARY_SET_NAME})")
@@ -187,6 +229,47 @@ def plot_before_after(theta_accept, theta_adj, output_dir):
         plt.savefig(os.path.join(output_dir, f"{name}_before_after_regression_adjustment.png"), dpi=200)
         plt.show()
         plt.close()
+
+
+def plot_basic_vs_adjusted_overlay(theta_accept, theta_adj, output_dir):
+    """
+    Combined three-panel comparison of Reduced set J basic ABC vs regression adjustment.
+    """
+    output_dir = os.path.join(output_dir, "plots")
+    os.makedirs(output_dir, exist_ok=True)
+    param_names = ["beta", "gamma", "rho"]
+
+    fig, axes = plt.subplots(1, len(param_names), figsize=(15, 4.2))
+
+    for param_idx, (ax, name) in enumerate(zip(axes, param_names)):
+        ax.hist(
+            theta_accept[:, param_idx],
+            bins=30,
+            density=True,
+            alpha=0.45,
+            label=f"Basic ABC ({REFERENCE_SUMMARY_SET_NAME})",
+        )
+        ax.hist(
+            theta_adj[:, param_idx],
+            bins=30,
+            density=True,
+            alpha=0.45,
+            label="Regression-adjusted ABC",
+        )
+        ax.set_xlabel(name)
+        ax.set_ylabel("Density")
+        ax.set_title(f"{name} ({REFERENCE_SUMMARY_SET_NAME})")
+        ax.legend()
+
+    fig.suptitle("Regression-adjusted posterior vs basic ABC", y=1.02)
+    fig.tight_layout()
+    fig.savefig(
+        os.path.join(output_dir, "basic_abc_vs_regression_adjusted_overlay.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    plt.show()
+    plt.close(fig)
 
 
 def plot_adjusted_overlay_by_epsilon(adjusted_results_by_epsilon, output_dir):
@@ -333,6 +416,7 @@ def save_adjusted_samples(theta_adj, output_dir, filename="abc_regression_adjust
 
 def main():
     data = np.load(REFERENCE_RESULTS_PATH)
+    basic_runtime_metrics = load_basic_abc_runtime_metrics()
 
     if not all(key in data for key in ("reference_parameters", "reference_summaries", "distances")):
         raise ValueError(
@@ -358,6 +442,7 @@ def main():
 
     print_posterior_comparison(accepted_parameters, theta_adj)
     plot_before_after(accepted_parameters, theta_adj, REGRESSION_DIAGNOSTICS_DIR)
+    plot_basic_vs_adjusted_overlay(accepted_parameters, theta_adj, REGRESSION_DIAGNOSTICS_DIR)
     save_adjusted_samples(theta_adj, REGRESSION_DIAGNOSTICS_DIR)
 
     raw_results_by_epsilon = []
@@ -400,6 +485,17 @@ def main():
 
     plot_adjusted_overlay_by_epsilon(adjusted_results_by_epsilon, REGRESSION_DIAGNOSTICS_DIR)
     plot_regression_projection_diagnostic(diagnostic_result, REGRESSION_DIAGNOSTICS_DIR)
+
+    write_runtime_summary(
+        method_name="abc_rejection_regression",
+        total_simulator_calls=basic_runtime_metrics["total_simulator_calls"],
+        wall_clock_seconds=basic_runtime_metrics["wall_clock_seconds"],
+        posterior_sample_size=int(theta_adj.shape[0]),
+        acceptance_rate=(
+            float(theta_adj.shape[0] / basic_runtime_metrics["total_simulator_calls"])
+            if basic_runtime_metrics["total_simulator_calls"] > 0 else None
+        ),
+    )
 
     print(f"\nSaved adjusted samples and before/after plots for {REFERENCE_SUMMARY_SET_NAME}.")
 

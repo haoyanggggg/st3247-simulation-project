@@ -1,0 +1,6 @@
+method_name,total_simulator_calls,wall_clock_seconds,posterior_sample_size,acceptance_rate,ess
+abc_mcmc,29723,289.431321,27001,0.1824,"{""beta"": 239.96057532106775, ""gamma"": 522.1617796381726, ""rho"": 214.22851671771213}"
+abc_rejection,100000,51.526413,1000,0.01,
+abc_rejection_regression,100000,51.526413,1000,0.01,
+smc_abc,11368,71.708951,300,0.1055594651653765,283.0977045272201
+synthetic_likelihood_mcmc,899460,110.642023,25000,0.23520784026134203,"{""beta"": 995.4887745750467, ""gamma"": 1903.809321620715, ""rho"": 1034.1516183778622}"

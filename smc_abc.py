@@ -66,6 +66,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+from time import perf_counter
 from tqdm import tqdm
 
 from simulator import simulate
@@ -90,6 +91,7 @@ from abc_rejection import (
     late_time_points_centered,
     late_time_points_denom,
 )
+from runtime_summary import write_runtime_summary
 
 
 ###############
@@ -612,6 +614,8 @@ def sample_initial_population(distance_threshold: float,
     summaries = np.zeros((N_particles, len(SUMMARY_INDICES)), dtype=np.float64)
     distances = np.zeros(N_particles, dtype=np.float64)
     total_attempts = 0
+    simulator_calls = 0
+    simulation_wall_clock_seconds = 0.0
 
     for particle_idx in tqdm(
         range(N_particles),
@@ -620,11 +624,14 @@ def sample_initial_population(distance_threshold: float,
         while True:
             total_attempts += 1
             candidate_parameters = sample_prior_parameters(rng)
+            simulator_calls += 1
+            simulation_runtime_start = perf_counter()
             candidate_summary = simulate_summary_statistics(
                 candidate_parameters,
                 rng,
                 simulation_context,
             )
+            simulation_wall_clock_seconds += perf_counter() - simulation_runtime_start
             candidate_distance = compute_distance(
                 candidate_summary,
                 reference_results["standardized_observed"],
@@ -654,6 +661,8 @@ def sample_initial_population(distance_threshold: float,
         "kernel_covariance": kernel_covariance,
         "kernel_cholesky": kernel_cholesky,
         "proposal_attempts": int(total_attempts),
+        "simulator_calls": int(simulator_calls),
+        "simulation_wall_clock_seconds": float(simulation_wall_clock_seconds),
         "acceptance_rate": float(N_particles / total_attempts),
         "ess": float(N_particles),
     }
@@ -679,6 +688,8 @@ def sample_mutated_population(previous_population: dict,
     summaries = np.zeros((N_particles, len(SUMMARY_INDICES)), dtype=np.float64)
     distances = np.zeros(N_particles, dtype=np.float64)
     total_attempts = 0
+    simulator_calls = 0
+    simulation_wall_clock_seconds = 0.0
 
     for particle_idx in tqdm(
         range(N_particles),
@@ -699,11 +710,14 @@ def sample_mutated_population(previous_population: dict,
             if not in_prior_support(candidate_parameters):
                 continue
 
+            simulator_calls += 1
+            simulation_runtime_start = perf_counter()
             candidate_summary = simulate_summary_statistics(
                 candidate_parameters,
                 rng,
                 simulation_context,
             )
+            simulation_wall_clock_seconds += perf_counter() - simulation_runtime_start
             candidate_distance = compute_distance(
                 candidate_summary,
                 reference_results["standardized_observed"],
@@ -738,6 +752,8 @@ def sample_mutated_population(previous_population: dict,
         "kernel_covariance": kernel_covariance,
         "kernel_cholesky": kernel_cholesky,
         "proposal_attempts": int(total_attempts),
+        "simulator_calls": int(simulator_calls),
+        "simulation_wall_clock_seconds": float(simulation_wall_clock_seconds),
         "acceptance_rate": float(N_particles / total_attempts),
         "ess": effective_sample_size_from_weights(weights),
     }
@@ -804,6 +820,7 @@ def run_smc_abc(rng: np.random.Generator,
                 "distance_threshold": population["distance_threshold"],
                 "population_size": population["particles"].shape[0],
                 "proposal_attempts": population["proposal_attempts"],
+                "simulator_calls": population["simulator_calls"],
                 "acceptance_rate": population["acceptance_rate"],
                 "ess": population["ess"],
                 "kernel_sd_beta": float(kernel_sd[0]),
@@ -819,6 +836,16 @@ def run_smc_abc(rng: np.random.Generator,
         "stage_records": stage_records,
         "final_population": final_population,
         "posterior_samples": posterior_samples,
+        "total_simulator_calls": int(
+            sum(population["simulator_calls"] for population in stage_populations)
+        ),
+        "total_simulation_wall_clock_seconds": float(
+            sum(population["simulation_wall_clock_seconds"] for population in stage_populations)
+        ),
+        "overall_acceptance_rate": float(
+            sum(population["particles"].shape[0] for population in stage_populations)
+            / max(1, sum(population["simulator_calls"] for population in stage_populations))
+        ),
     }
 
 
@@ -1030,6 +1057,14 @@ def main() -> None:
         + ", ".join(
             f"{threshold:.6f}" for threshold in smc_results["distance_thresholds"]
         )
+    )
+    write_runtime_summary(
+        method_name="smc_abc",
+        total_simulator_calls=int(smc_results["total_simulator_calls"]),
+        wall_clock_seconds=float(smc_results["total_simulation_wall_clock_seconds"]),
+        posterior_sample_size=int(smc_results["posterior_samples"].shape[0]),
+        acceptance_rate=float(smc_results["overall_acceptance_rate"]),
+        ess=float(smc_results["final_population"]["ess"]),
     )
     print(f"Saved final SMC posterior samples: {smc_results['posterior_samples'].shape[0]}")
     print("Saved weighted particles, diagnostics, and posterior comparison plots.")

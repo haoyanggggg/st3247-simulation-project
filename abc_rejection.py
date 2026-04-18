@@ -67,6 +67,9 @@ import os
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from time import perf_counter
+
+from runtime_summary import write_runtime_summary
 
 
 ###############
@@ -185,6 +188,13 @@ SUMMARY_SET_INDICES = {
         REWIRING_PER_INFECTION_IDX,
         PEAK_WIDTH_HALF_MAX_IDX
     ),
+    "Reduced set J": (
+        MAX_INFECTION_IDX,
+        TIME_TO_PEAK_IDX,
+        DEGREE_VARIANCE_IDX,
+        REWIRING_PER_INFECTION_IDX,
+        PEAK_WIDTH_HALF_MAX_IDX
+    ),
 
 }
 
@@ -199,9 +209,11 @@ SUMMARY_SET_COMPARISONS = (
     ("Rich set", "Reduced set G"),
     ("Rich set", "Reduced set H"),
     ("Rich set", "Reduced set I"),
+    ("Rich set", "Reduced set J"),
+
 )
 
-REFERENCE_SUMMARY_SET_NAME = "Reduced set I"
+REFERENCE_SUMMARY_SET_NAME = "Reduced set J"
 REFERENCE_SUMMARY_SET_INDICES = SUMMARY_SET_INDICES[REFERENCE_SUMMARY_SET_NAME]
 REFERENCE_SUMMARY_SET_SLUG = REFERENCE_SUMMARY_SET_NAME.lower().replace(" ", "_")
 PARAMETER_NAMES = ("beta", "gamma", "rho")
@@ -214,9 +226,9 @@ PARAM_ESTIMATES_DIR = BASIC_ABC_DIR / "param_estimates"
 SUMMARY_SET_STUDY_DIR = BASIC_ABC_DIR / "summary_set_study"
 REGRESSION_ADJUSTMENT_DIR = BASE_DIR / "data" / "intermediate"
 REFERENCE_RESULTS_PATH = REGRESSION_ADJUSTMENT_DIR / "abc_rejection_output.npz"
-PPC_DIR = BASIC_ABC_DIR / "posterior_predictive_checks"        # ADDED
-JOINT_POSTERIOR_DIR = BASIC_ABC_DIR / "joint_posteriors"       # ADDED
-MARGINAL_POSTERIOR_DIR = BASIC_ABC_DIR / "marginal_posteriors" # ADDED
+PPC_DIR = BASIC_ABC_DIR / "posterior_predictive_checks"       
+JOINT_POSTERIOR_DIR = BASIC_ABC_DIR / "joint_posteriors"       
+MARGINAL_POSTERIOR_DIR = BASIC_ABC_DIR / "marginal_posteriors"
 
 early_time_window_min = 2
 early_time_window_max = 6 + 1
@@ -565,7 +577,8 @@ def save_samples_and_plots(simulated_summary_statistics,
                            observed_summary_statistics,
                            distances,
                            simulated_parameters,
-                           acceptance_epsilon_list=None):
+                           acceptance_epsilon_list=None,
+                           show_plots=True):
     """
     Generate diagnostic plots for accepted summary statistics and save posterior samples.
 
@@ -658,7 +671,8 @@ def save_samples_and_plots(simulated_summary_statistics,
         plt.legend()
         plot_path = SANITY_CHECK_DIR / f"summary_{summary_statistics_name[i]}_overlay_eps_{timestamp}.png"
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
     # Save accepted parameters to CSV for each epsilon threshold
@@ -674,7 +688,8 @@ def save_samples_and_plots(simulated_summary_statistics,
 def plot_posterior_comparison_plots(simulated_summary_statistics,
                                     observed_summary_statistics,
                                     simulated_parameters,
-                                    comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+                                    comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+                                    show_pairs=None):
     """Plot rich-set posterior overlays against the requested reduced summary sets."""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
@@ -695,6 +710,8 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
             distances,
             [comparison_epsilon]
         )[comparison_epsilon]
+
+    show_pairs = None if show_pairs is None else set(show_pairs)
 
     for rich_set_name, reduced_set_name in SUMMARY_SET_COMPARISONS:
         rich_parameters = simulated_parameters[accepted_idx_by_set[rich_set_name]]
@@ -736,8 +753,9 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
             / f"posterior_{comparison_slug}_eps-{comparison_epsilon:.4f}_{timestamp}.png"
         )
 
-        plt.show()
         fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+        if show_pairs is None or (rich_set_name, reduced_set_name) in show_pairs:
+            plt.show()
         plt.close(fig)
 
 def save_summary_set_outputs(summary_set_name,
@@ -746,7 +764,8 @@ def save_summary_set_outputs(summary_set_name,
                              observed_summary_statistics,
                              distances,
                              simulated_parameters,
-                             acceptance_epsilon_list=None):
+                             acceptance_epsilon_list=None,
+                             show_plots=True):
     """Save accepted-summary plots and posterior samples for one chosen summary set."""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
@@ -798,7 +817,8 @@ def save_summary_set_outputs(summary_set_name,
             / f"{summary_set_slug}_summary_{summary_statistics_name[summary_idx]}_overlay_eps_{timestamp}.png"
         )
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
     for acceptance_epsilon in acceptance_epsilon_list:
@@ -861,7 +881,7 @@ def compute_posterior_spread_table(simulated_parameters,
     
     return pd.DataFrame(rows).sort_values("mean std")
 
-def plot_posterior_spread_heatmap(spread_df, filename):
+def plot_posterior_spread_heatmap(spread_df, filename, show_plot=True):
     """Heatmap: rows=summary sets, cols=parameters, values=normalized posterior std."""
     SUMMARY_SET_STUDY_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -896,16 +916,18 @@ def plot_posterior_spread_heatmap(spread_df, filename):
     ax.set_title(f"Posterior spread by summary set (ε={POSTERIOR_COMPARISON_EPSILON})")
     fig.tight_layout()
     fig.savefig(filename, dpi=300, bbox_inches='tight')
-    plt.show()
+    if show_plot:
+        plt.show()
     plt.close(fig)
-############################################### ADDED OVERLAY & JOINT #######################################################
+
 def plot_posterior_predictive_checks(simulated_summary_statistics,
                                      observed_summary_statistics,
                                      simulated_parameters,
                                      simulation_context,
                                      n_ppc_samples=200,
                                      comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
-                                     seed=seed):
+                                     seed=seed,
+                                     show_plot=True):
     """
     Posterior predictive check: overlay simulated trajectories from accepted
     parameters against observed data for all three observables:
@@ -1034,14 +1056,94 @@ def plot_posterior_predictive_checks(simulated_summary_statistics,
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     plot_path = PPC_DIR / f"ppc_all_observables_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    if show_plot:
+        plt.show()
     plt.close(fig)
+
+
+def get_accepted_posterior_for_summary_set(simulated_parameters,
+                                           simulated_summary_statistics,
+                                           observed_summary_statistics,
+                                           summary_indices,
+                                           comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """Return accepted posterior samples for one chosen summary-statistic set."""
+    distances = compute_distances_for_summary_set(
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        summary_indices
+    )
+    accepted_idx = get_accepted_indices_by_epsilon(
+        distances,
+        [comparison_epsilon]
+    )[comparison_epsilon]
+    return np.asarray(simulated_parameters)[accepted_idx]
+
+
+def print_joint_posterior_correlation_comparison(simulated_parameters,
+                                                 simulated_summary_statistics,
+                                                 observed_summary_statistics,
+                                                 comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """
+    Compare pairwise posterior correlations for Reduced set J versus the full rich set.
+    """
+    set_j_posterior = get_accepted_posterior_for_summary_set(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        SUMMARY_SET_INDICES["Reduced set J"],
+        comparison_epsilon=comparison_epsilon,
+    )
+    rich_set_posterior = get_accepted_posterior_for_summary_set(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        SUMMARY_SET_INDICES["Rich set"],
+        comparison_epsilon=comparison_epsilon,
+    )
+
+    pair_definitions = (
+        (0, 1, "beta", "gamma"),
+        (0, 2, "beta", "rho"),
+        (1, 2, "gamma", "rho"),
+    )
+    print(f"\n[Joint posterior correlation comparison] ε={comparison_epsilon:.3f}")
+    print("Reduced set J vs Rich set")
+    for i, j, x_name, y_name in pair_definitions:
+        set_j_x = set_j_posterior[:, i]
+        set_j_y = set_j_posterior[:, j]
+        rich_x = rich_set_posterior[:, i]
+        rich_y = rich_set_posterior[:, j]
+
+        if np.allclose(np.std(set_j_x), 0.0) or np.allclose(np.std(set_j_y), 0.0):
+            set_j_label = "undefined"
+            set_j_value = np.nan
+        else:
+            set_j_value = np.corrcoef(set_j_x, set_j_y)[0, 1]
+            set_j_label = f"{set_j_value:.4f}"
+
+        if np.allclose(np.std(rich_x), 0.0) or np.allclose(np.std(rich_y), 0.0):
+            rich_label = "undefined"
+            rich_value = np.nan
+        else:
+            rich_value = np.corrcoef(rich_x, rich_y)[0, 1]
+            rich_label = f"{rich_value:.4f}"
+
+        if np.isfinite(set_j_value) and np.isfinite(rich_value):
+            delta_label = f"{set_j_value - rich_value:+.4f}"
+        else:
+            delta_label = "n/a"
+        print(
+            f"{x_name} vs {y_name}: "
+            f"set J={set_j_label}, rich={rich_label}, "
+            f"Δ={delta_label}"
+        )
 
 
 def plot_joint_posteriors(simulated_parameters,
                           simulated_summary_statistics,
                           observed_summary_statistics,
-                          comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+                          comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+                          show_plot=True):
     """
     Joint posterior scatter plots for parameter pairs.
     Most useful pairs for this model:
@@ -1105,7 +1207,8 @@ def plot_joint_posteriors(simulated_parameters,
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     plot_path = JOINT_POSTERIOR_DIR / f"joint_posteriors_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    if show_plot:
+        plt.show()
     plt.close(fig)
 
 
@@ -1113,7 +1216,8 @@ def plot_marginal_posteriors(simulated_parameters,
                              simulated_summary_statistics,
                              observed_summary_statistics,
                              acceptance_epsilon_list=None,
-                             comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+                             comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+                             show_plot=True):
     """
     Marginal posterior histograms for all three parameters,
     overlaid across epsilon values to show sensitivity to tolerance.
@@ -1160,9 +1264,9 @@ def plot_marginal_posteriors(simulated_parameters,
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     plot_path = MARGINAL_POSTERIOR_DIR / f"marginal_posteriors_{timestamp}.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    if show_plot:
+        plt.show()
     plt.close(fig)
-############################################### END OF ADDITION #######################################################
 
 ###############
 #
@@ -1227,6 +1331,7 @@ def main() -> None:
     n_workers = max(1, (os.cpu_count() or 1) - 1)
 
     # simulate 30_000 times
+    simulation_runtime_start = perf_counter()
     if n_workers == 1:
         simulation_results = [
             one_simulation(np.random.default_rng(int(sim_seed)), simulation_context)
@@ -1247,6 +1352,7 @@ def main() -> None:
                     desc="Running ABC"
                 )
             )
+    simulation_wall_clock_seconds = perf_counter() - simulation_runtime_start
 
     simulated_summary_statistics, simulated_parameters = zip(*simulation_results)
 
@@ -1265,7 +1371,8 @@ def main() -> None:
                            observed_summary_statistics,
                            distances,
                            simulated_parameters,
-                           acceptance_epsilon_list=acceptance_epsilon_list)
+                           acceptance_epsilon_list=acceptance_epsilon_list,
+                           show_plots=False)
     reference_set_distances = compute_distances_for_summary_set(
         simulated_summary_statistics,
         observed_summary_statistics,
@@ -1275,7 +1382,8 @@ def main() -> None:
         simulated_summary_statistics,
         observed_summary_statistics,
         simulated_parameters,
-        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+        show_pairs={("Rich set", REFERENCE_SUMMARY_SET_NAME)},
     )
     save_summary_set_outputs(
         REFERENCE_SUMMARY_SET_NAME,
@@ -1284,7 +1392,8 @@ def main() -> None:
         observed_summary_statistics,
         reference_set_distances,
         simulated_parameters,
-        acceptance_epsilon_list=acceptance_epsilon_list
+        acceptance_epsilon_list=acceptance_epsilon_list,
+        show_plots=False,
     )
 
     # save the chosen reference-summary calibration for downstream methods
@@ -1341,7 +1450,6 @@ def main() -> None:
         summary_set_name=np.array(REFERENCE_SUMMARY_SET_NAME, dtype=object),
     )
     
-    ########################################## Added summary set selection analysis #######################################################
     spread_df = compute_posterior_spread_table(
         simulated_parameters,
         simulated_summary_statistics,
@@ -1352,10 +1460,10 @@ def main() -> None:
     
     plot_posterior_spread_heatmap(
         spread_df,
-        SUMMARY_SET_STUDY_DIR / f"posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png"
+        SUMMARY_SET_STUDY_DIR / f"posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png",
+        show_plot=False,
     )
 
-    ########################################## Posterior predictive checks + joint posteriors #######################################################
     plot_posterior_predictive_checks(
         simulated_summary_statistics,
         observed_summary_statistics,
@@ -1363,9 +1471,17 @@ def main() -> None:
         simulation_context,
         n_ppc_samples=200,
         comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+        show_plot=False,
     )
 
     plot_joint_posteriors(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+        show_plot=False,
+    )
+    print_joint_posterior_correlation_comparison(
         simulated_parameters,
         simulated_summary_statistics,
         observed_summary_statistics,
@@ -1377,8 +1493,17 @@ def main() -> None:
         simulated_summary_statistics,
         observed_summary_statistics,
         acceptance_epsilon_list=acceptance_epsilon_list,
+        show_plot=True,
     )
-    ############################################### END OF ADDITION #######################################################
+    write_runtime_summary(
+        method_name="abc_rejection",
+        total_simulator_calls=int(np.asarray(simulated_parameters).shape[0]),
+        wall_clock_seconds=simulation_wall_clock_seconds,
+        posterior_sample_size=int(accepted_parameters.shape[0]),
+        acceptance_rate=float(
+            accepted_parameters.shape[0] / np.asarray(simulated_parameters).shape[0]
+        ),
+    )
 ###############
 #
 #

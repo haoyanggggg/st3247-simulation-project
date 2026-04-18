@@ -19,7 +19,7 @@ venv/
 *~
 
 # MikeTex related
-.log
-.out
-.toc
-.pdf
+*.log
+*.out
+*.toc
+*.pdf
