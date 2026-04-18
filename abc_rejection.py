@@ -858,7 +858,6 @@ def compute_posterior_spread_table(simulated_parameters,
     
     return pd.DataFrame(rows).sort_values("mean std")
 
-######################################################### Added heatmap to visualize posterior spread ####################################################
 def plot_posterior_spread_heatmap(spread_df, filename):
     """Heatmap: rows=summary sets, cols=parameters, values=normalized posterior std."""
     SUMMARY_SET_STUDY_DIR.mkdir(parents=True, exist_ok=True)
@@ -894,6 +893,273 @@ def plot_posterior_spread_heatmap(spread_df, filename):
     ax.set_title(f"Posterior spread by summary set (ε={POSTERIOR_COMPARISON_EPSILON})")
     fig.tight_layout()
     fig.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close(fig)
+############################################### ADDED OVERLAY & JOINT #######################################################
+def plot_posterior_predictive_checks(simulated_summary_statistics,
+                                     observed_summary_statistics,
+                                     simulated_parameters,
+                                     simulation_context,
+                                     n_ppc_samples=200,
+                                     comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+                                     seed=seed):
+    """
+    Posterior predictive check: overlay simulated trajectories from accepted
+    parameters against observed data for all three observables:
+    - Infected fraction time series
+    - Rewiring counts time series  
+    - Final degree histogram
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    PPC_DIR = BASIC_ABC_DIR / "posterior_predictive_checks"
+    PPC_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Get accepted parameters from reference set
+    reference_distances = compute_distances_for_summary_set(
+        simulated_summary_statistics, observed_summary_statistics,
+        REFERENCE_SUMMARY_SET_INDICES
+    )
+    accepted_idx = get_accepted_indices_by_epsilon(
+        reference_distances, [comparison_epsilon]
+    )[comparison_epsilon]
+    accepted_params = np.asarray(simulated_parameters)[accepted_idx]
+
+    # Subsample for PPC if too many
+    rng = np.random.default_rng(seed)
+    n_accepted = accepted_params.shape[0]
+    sample_idx = rng.choice(n_accepted, size=min(n_ppc_samples, n_accepted), replace=False)
+    ppc_params = accepted_params[sample_idx]
+
+    # Run new simulations from accepted parameters to get full trajectories
+    ppc_infected   = []
+    ppc_rewire     = []
+    ppc_degree     = []
+
+    for beta, gamma, rho in tqdm(ppc_params, desc="Running PPC simulations"):
+        inf_ts, rew_ts, deg_hist = simulate(
+            beta=beta, gamma=gamma, rho=rho,
+            rng=np.random.default_rng(int(rng.integers(1e9))),
+            simulation_context=simulation_context
+        )
+        ppc_infected.append(inf_ts)
+        ppc_rewire.append(rew_ts)
+        ppc_degree.append(deg_hist)
+
+    ppc_infected = np.array(ppc_infected)   # (n_samples, T+1)
+    ppc_rewire   = np.array(ppc_rewire)     # (n_samples, T+1)
+    ppc_degree   = np.array(ppc_degree)     # (n_samples, 31)
+
+    # Load observed data for full trajectories
+    infected_df    = pd.read_csv(BASE_DIR / "data" / "infected_timeseries.csv")
+    rewire_df      = pd.read_csv(BASE_DIR / "data" / "rewiring_timeseries.csv")
+    degree_df      = pd.read_csv(BASE_DIR / "data" / "final_degree_histograms.csv")
+
+    obs_inf_mean   = infected_df.groupby("time")["infected_fraction"].mean().values
+    obs_inf_lower  = infected_df.groupby("time")["infected_fraction"].quantile(0.1).values
+    obs_inf_upper  = infected_df.groupby("time")["infected_fraction"].quantile(0.9).values
+
+    obs_rew_mean   = rewire_df.groupby("time")["rewire_count"].mean().values
+    obs_rew_lower  = rewire_df.groupby("time")["rewire_count"].quantile(0.1).values
+    obs_rew_upper  = rewire_df.groupby("time")["rewire_count"].quantile(0.9).values
+
+    obs_deg_mean   = degree_df.groupby("degree")["count"].mean().values
+    obs_deg_lower  = degree_df.groupby("degree")["count"].quantile(0.1).values
+    obs_deg_upper  = degree_df.groupby("degree")["count"].quantile(0.9).values
+
+    T        = ppc_infected.shape[1]
+    t_axis   = np.arange(T)
+    deg_axis = np.arange(31)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    # --- Panel 1: Infected fraction ---
+    ax = axes[0]
+    for row in ppc_infected:
+        ax.plot(t_axis, row, color='steelblue', alpha=0.08, linewidth=0.7)
+    ax.plot(t_axis, np.median(ppc_infected, axis=0), color='steelblue',
+            linewidth=2, label="PPC median")
+    ax.fill_between(t_axis,
+                    np.percentile(ppc_infected, 10, axis=0),
+                    np.percentile(ppc_infected, 90, axis=0),
+                    color='steelblue', alpha=0.2, label="PPC 10–90%")
+    ax.plot(t_axis, obs_inf_mean, color='red', linewidth=2, label="Observed mean")
+    ax.fill_between(t_axis, obs_inf_lower, obs_inf_upper,
+                    color='red', alpha=0.15, label="Observed 10–90%")
+    ax.set_title("Infected fraction")
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("Fraction infected")
+    ax.legend(fontsize=8)
+
+    # --- Panel 2: Rewiring counts ---
+    ax = axes[1]
+    for row in ppc_rewire:
+        ax.plot(t_axis, row, color='darkorange', alpha=0.08, linewidth=0.7)
+    ax.plot(t_axis, np.median(ppc_rewire, axis=0), color='darkorange',
+            linewidth=2, label="PPC median")
+    ax.fill_between(t_axis,
+                    np.percentile(ppc_rewire, 10, axis=0),
+                    np.percentile(ppc_rewire, 90, axis=0),
+                    color='darkorange', alpha=0.2, label="PPC 10–90%")
+    ax.plot(t_axis, obs_rew_mean, color='red', linewidth=2, label="Observed mean")
+    ax.fill_between(t_axis, obs_rew_lower, obs_rew_upper,
+                    color='red', alpha=0.15, label="Observed 10–90%")
+    ax.set_title("Rewiring counts")
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("Rewire count")
+    ax.legend(fontsize=8)
+
+    # --- Panel 3: Degree histogram ---
+    ax = axes[2]
+    ax.fill_between(deg_axis,
+                    np.percentile(ppc_degree, 10, axis=0),
+                    np.percentile(ppc_degree, 90, axis=0),
+                    color='forestgreen', alpha=0.3, label="PPC 10–90%")
+    ax.plot(deg_axis, np.median(ppc_degree, axis=0), color='forestgreen',
+            linewidth=2, label="PPC median")
+    ax.plot(deg_axis, obs_deg_mean, color='red', linewidth=2,
+            label="Observed mean")
+    ax.fill_between(deg_axis, obs_deg_lower, obs_deg_upper,
+                    color='red', alpha=0.15, label="Observed 10–90%")
+    ax.set_title("Final degree histogram")
+    ax.set_xlabel("Degree")
+    ax.set_ylabel("Node count")
+    ax.legend(fontsize=8)
+
+    fig.suptitle(
+        f"Posterior predictive check — {REFERENCE_SUMMARY_SET_NAME} "
+        f"(ε={comparison_epsilon}, n={len(ppc_params)} samples)"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    plot_path = PPC_DIR / f"ppc_all_observables_{timestamp}.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close(fig)
+
+
+def plot_joint_posteriors(simulated_parameters,
+                          simulated_summary_statistics,
+                          observed_summary_statistics,
+                          comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """
+    Joint posterior scatter plots for parameter pairs.
+    Most useful pairs for this model:
+    - beta vs rho: both drive S-I edge dynamics, partially aliased
+    - gamma vs rho: main identifiability problem
+    - beta vs gamma: jointly determine epidemic size/speed
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    JOINT_DIR = BASIC_ABC_DIR / "joint_posteriors"
+    JOINT_DIR.mkdir(parents=True, exist_ok=True)
+
+    reference_distances = compute_distances_for_summary_set(
+        simulated_summary_statistics, observed_summary_statistics,
+        REFERENCE_SUMMARY_SET_INDICES
+    )
+    accepted_idx = get_accepted_indices_by_epsilon(
+        reference_distances, [comparison_epsilon]
+    )[comparison_epsilon]
+    posterior = np.asarray(simulated_parameters)[accepted_idx]
+
+    pairs = [
+        (0, 2, "beta", "rho",   "β vs ρ — both suppress via S-I edges"),
+        (1, 2, "gamma", "rho",  "γ vs ρ — main aliasing pair"),
+        (0, 1, "beta", "gamma", "β vs γ — jointly determine epidemic size"),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    for ax, (i, j, xlabel, ylabel, title) in zip(axes, pairs):
+        # Scatter
+        ax.scatter(posterior[:, i], posterior[:, j],
+                   alpha=0.35, s=12, color='steelblue', label="Accepted samples")
+
+        # Add 2D KDE contours
+        try:
+            from scipy.stats import gaussian_kde
+            xy  = np.vstack([posterior[:, i], posterior[:, j]])
+            kde = gaussian_kde(xy)
+            xi  = np.linspace(posterior[:, i].min(), posterior[:, i].max(), 80)
+            yi  = np.linspace(posterior[:, j].min(), posterior[:, j].max(), 80)
+            Xi, Yi = np.meshgrid(xi, yi)
+            Zi  = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+            ax.contour(Xi, Yi, Zi, levels=5, colors='navy', linewidths=0.8, alpha=0.6)
+        except Exception:
+            pass  # skip contours if scipy unavailable or KDE fails
+
+        # Posterior means
+        ax.axvline(posterior[:, i].mean(), color='red', linestyle='--',
+                   linewidth=1.2, label=f"mean {xlabel}={posterior[:,i].mean():.3f}")
+        ax.axhline(posterior[:, j].mean(), color='red', linestyle=':',
+                   linewidth=1.2, label=f"mean {ylabel}={posterior[:,j].mean():.3f}")
+
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=9)
+        ax.legend(fontsize=7)
+
+    fig.suptitle(
+        f"Joint posteriors — {REFERENCE_SUMMARY_SET_NAME} "
+        f"(ε={comparison_epsilon}, n={posterior.shape[0]})"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    plot_path = JOINT_DIR / f"joint_posteriors_{timestamp}.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close(fig)
+
+
+def plot_marginal_posteriors(simulated_parameters,
+                             simulated_summary_statistics,
+                             observed_summary_statistics,
+                             acceptance_epsilon_list=None,
+                             comparison_epsilon=POSTERIOR_COMPARISON_EPSILON):
+    """
+    Marginal posterior histograms for all three parameters,
+    overlaid across epsilon values to show sensitivity to tolerance.
+    """
+    if acceptance_epsilon_list is None:
+        acceptance_epsilon_list = [0.005, 0.01, 0.03]
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    MARGINAL_DIR = BASIC_ABC_DIR / "marginal_posteriors"
+    MARGINAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    reference_distances = compute_distances_for_summary_set(
+        simulated_summary_statistics, observed_summary_statistics,
+        REFERENCE_SUMMARY_SET_INDICES
+    )
+    accepted_by_eps = get_accepted_indices_by_epsilon(
+        reference_distances, acceptance_epsilon_list
+    )
+    simulated_parameters = np.asarray(simulated_parameters)
+
+    prior_bounds = [(0.05, 0.5), (0.02, 0.2), (0.0, 0.8)]
+    colors = ['steelblue', 'darkorange', 'forestgreen']
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+
+    for param_idx, (ax, pname, bounds) in enumerate(zip(axes, PARAMETER_NAMES, prior_bounds)):
+        for eps, color in zip(sorted(acceptance_epsilon_list, reverse=True), colors):
+            accepted = simulated_parameters[accepted_by_eps[eps]]
+            ax.hist(accepted[:, param_idx], bins=30, density=True,
+                    alpha=0.45, color=color,
+                    label=f"ε={eps} (n={accepted.shape[0]})")
+
+        # Prior as flat reference line
+        prior_density = 1.0 / (bounds[1] - bounds[0])
+        ax.axhline(prior_density, color='black', linestyle='--',
+                   linewidth=1.2, label="Prior (uniform)")
+
+        ax.set_title(f"Posterior of {pname}")
+        ax.set_xlabel(pname)
+        ax.set_ylabel("Density")
+        ax.set_xlim(bounds)
+        ax.legend(fontsize=8)
+
+    fig.suptitle(f"Marginal posteriors — {REFERENCE_SUMMARY_SET_NAME}")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    plot_path = MARGINAL_DIR / f"marginal_posteriors_{timestamp}.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.show()
     plt.close(fig)
 ############################################### END OF ADDITION #######################################################
@@ -1088,6 +1354,31 @@ def main() -> None:
         spread_df,
         SUMMARY_SET_STUDY_DIR / f"posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png"
     )
+
+    ########################################## Posterior predictive checks + joint posteriors #######################################################
+    plot_posterior_predictive_checks(
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        simulated_parameters,
+        simulation_context,
+        n_ppc_samples=200,
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+    )
+
+    plot_joint_posteriors(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
+    )
+
+    plot_marginal_posteriors(
+        simulated_parameters,
+        simulated_summary_statistics,
+        observed_summary_statistics,
+        acceptance_epsilon_list=acceptance_epsilon_list,
+    )
+    ############################################### END OF ADDITION #######################################################
 ###############
 #
 #
