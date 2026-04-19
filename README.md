@@ -138,8 +138,8 @@ All extension methods in the report are calibrated against this saved
 
 ## Reproducible Outputs
 
-Plots and CSVs are now written to deterministic filenames so repeated runs
-overwrite the same canonical artifacts instead of creating timestamped copies.
+Plots and CSVs are written to deterministic filenames so repeated runs
+overwrite the same canonical artifacts.
 
 Examples:
 
@@ -151,9 +151,6 @@ Examples:
 - `outputs/smc_abc/param_estimates/smc_abc_output.csv`
 - `outputs/synthetic_likelihood_mcmc/synthetic_likelihood_output.csv`
 - `outputs/sl_mcmc_recovery/plots/synthetic_truth_recovery_sl.png`
-
-If older timestamped files are still present in `outputs/`, treat the stable
-non-timestamped filenames as the current canonical outputs used by the report.
 
 ## Example Figures
 
