@@ -53,11 +53,12 @@ def run_recovery_smc_abc(rng: np.random.Generator,
     """
     # 1. Generate synthetic observed summaries
     print(f"Generating synthetic observed data from true parameters: {dict(zip(PARAMETER_NAMES, true_parameters))}")
-    true_summaries = simulate_summary_statistics(
-        true_parameters,
-        rng,
-        simulation_context,
-    )
+    N_RECOVERY_REPLICATES = 40
+    replicate_summaries = []
+    for _ in range(N_RECOVERY_REPLICATES):
+        s = simulate_summary_statistics(true_parameters, rng, simulation_context)
+        replicate_summaries.append(s)
+    true_summaries = np.mean(replicate_summaries, axis=0)
     
     # 2. Standardize these true summaries using reference scaling
     standardized_true_observed = (true_summaries - reference_results["summary_mu"]) / reference_results["summary_sigma"]
@@ -124,7 +125,7 @@ def plot_recovery_results(smc_results: dict,
             color='red',
             linestyle='--',
             linewidth=2,
-            label="mean of accepted values",
+            label=f"True value = {true_parameters[param_idx]:.3f}",
         )
         axes[param_idx].set_xlabel(param_name)
         axes[param_idx].set_ylabel("Density")

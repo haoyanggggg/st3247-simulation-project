@@ -42,7 +42,12 @@ def run_recovery_sl_mcmc():
     print(f"Generating synthetic observed data from truth: {dict(zip(PARAMETER_NAMES, TRUE_PARAMS))}")
     # We need to initialize the global variables for the worker to function in main thread
     init_worker(sim_context, calibration)
-    obs_s = simulate_summaries_worker(TRUE_PARAMS, rng.integers(0, 2**31))
+    N_RECOVERY_REPLICATES = 40
+    replicate_summaries = []
+    for _ in range(N_RECOVERY_REPLICATES):
+        s = simulate_summaries_worker(TRUE_PARAMS, rng.integers(0, 2**31))
+        replicate_summaries.append(s)
+    obs_s = np.mean(replicate_summaries, axis=0)
     
     # 2. Run SL-MCMC
     N_iter_recovery = 5000 # Shortened for verification
@@ -79,7 +84,7 @@ def run_recovery_sl_mcmc():
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     for j, p in enumerate(PARAMETER_NAMES):
         axes[j].hist(post[:, j], bins=30, alpha=0.6, color='skyblue', density=True, label="SL-MCMC Posterior")
-        axes[j].axvline(TRUE_PARAMS[j], color='red', linestyle='--', lw=2, label="mean of accepted values")
+        axes[j].axvline(TRUE_PARAMS[j], color='red', linestyle='--', lw=2, label=f"True value = {TRUE_PARAMS[j]:.3f}")
         axes[j].set_xlabel(p)
         axes[j].set_title(f"Recovery: {p}")
         axes[j].legend()

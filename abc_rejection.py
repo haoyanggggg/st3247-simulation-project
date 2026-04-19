@@ -844,7 +844,6 @@ def save_summary_set_outputs(summary_set_name,
         summary_names=np.asarray([summary_statistics_name[idx] for idx in summary_indices], dtype=object),
     )
 
-####################################################################### Added to see which summary sets are most informative #########################################################
 def compute_posterior_spread_table(simulated_parameters,
                                    simulated_summary_statistics,
                                    observed_summary_statistics,
