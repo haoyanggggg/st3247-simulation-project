@@ -5,14 +5,14 @@ Date: 2026-04-11
 
 Description
 -----------
-This script loads the latest `ε = 0.01` posterior samples from the rich summary
+This script loads the `ε = 0.01` posterior samples from the rich summary
 set and from the chosen reduced reference set, then visualizes their posterior
 structure using
 separate seaborn pairplots.
 
 The workflow:
-1. Locate the latest rich-set posterior CSV at `ε = 0.01`
-2. Locate the latest reduced-reference posterior CSV at `ε = 0.01`
+1. Locate the rich-set posterior CSV at `ε = 0.01`
+2. Locate the reduced-reference posterior CSV at `ε = 0.01`
 3. Load both posterior sample tables
 4. Produce one pairplot for the rich set
 5. Produce one pairplot for the reduced-reference set
@@ -35,7 +35,7 @@ Outputs
 
 Notes
 -----
-- The script always selects the latest matching timestamped CSV for each source.
+- The script expects deterministic filenames from `abc_rejection.py`.
 - It assumes `abc_rejection.py` has already been run and the expected output
   files are present.
 """
@@ -59,14 +59,13 @@ REFERENCE_SET_PARAM_DIR = SUMMARY_SET_STUDY_DIR / REFERENCE_SUMMARY_SET_SLUG / "
 TARGET_EPSILON_SLUG = "0.0100"
 
 
-def get_latest_matching_csv(param_estimates_dir: Path, pattern: str, label: str) -> Path:
-    csv_candidates = sorted(param_estimates_dir.glob(pattern))
-    if not csv_candidates:
+def get_required_csv(csv_path: Path, label: str) -> Path:
+    if not csv_path.exists():
         raise FileNotFoundError(
-            f"No {label} posterior CSVs found in {param_estimates_dir}. "
+            f"No {label} posterior CSV found at {csv_path}. "
             "Run abc_rejection.py first."
         )
-    return csv_candidates[-1]
+    return csv_path
 
 
 def plot_posterior_pairplot(df: pd.DataFrame, title: str, color: str) -> None:
@@ -81,14 +80,12 @@ def plot_posterior_pairplot(df: pd.DataFrame, title: str, color: str) -> None:
 
 
 def main() -> None:
-    rich_set_csv_path = get_latest_matching_csv(
-        RICH_SET_PARAM_DIR,
-        f"abc-basic_eps-{TARGET_EPSILON_SLUG}_*.csv",
+    rich_set_csv_path = get_required_csv(
+        RICH_SET_PARAM_DIR / f"abc-basic_eps-{TARGET_EPSILON_SLUG}.csv",
         "rich set",
     )
-    reference_set_csv_path = get_latest_matching_csv(
-        REFERENCE_SET_PARAM_DIR,
-        f"{REFERENCE_SUMMARY_SET_SLUG}_abc-basic_eps-{TARGET_EPSILON_SLUG}_*.csv",
+    reference_set_csv_path = get_required_csv(
+        REFERENCE_SET_PARAM_DIR / f"{REFERENCE_SUMMARY_SET_SLUG}_abc-basic_eps-{TARGET_EPSILON_SLUG}.csv",
         REFERENCE_SUMMARY_SET_NAME,
     )
 

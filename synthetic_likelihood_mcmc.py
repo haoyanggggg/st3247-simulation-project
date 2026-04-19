@@ -202,14 +202,13 @@ def run_sl_mcmc():
         plt.close()
 
     # Comparison with the current reference-set rejection ABC posterior
-    basic_abc_dir = SUMMARY_SET_STUDY_DIR / REFERENCE_SUMMARY_SET_SLUG / "param_estimates"
-    basic_abc_files = sorted(
-        basic_abc_dir.glob(
-            f"{REFERENCE_SUMMARY_SET_SLUG}_abc-basic_eps-{POSTERIOR_COMPARISON_EPSILON:.4f}_*.csv"
-        )
+    basic_abc_path = (
+        SUMMARY_SET_STUDY_DIR
+        / REFERENCE_SUMMARY_SET_SLUG
+        / "param_estimates"
+        / f"{REFERENCE_SUMMARY_SET_SLUG}_abc-basic_eps-{POSTERIOR_COMPARISON_EPSILON:.4f}.csv"
     )
-    if basic_abc_files:
-        basic_abc_path = basic_abc_files[-1]
+    if basic_abc_path.exists():
         basic = pd.read_csv(basic_abc_path)
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         for j, p in enumerate(PARAMETER_NAMES):

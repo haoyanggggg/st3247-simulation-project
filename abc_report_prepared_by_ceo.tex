@@ -39,9 +39,10 @@ This report summarizes an Approximate Bayesian Computation (ABC) study for an ad
 \texttt{simulator.py},
 \texttt{observed\_summaries.py},
 \texttt{abc\_rejection.py},
-\texttt{abc\_rejection\_regression.py}, and
-\texttt{abc\_mcmc.py}, and
-\texttt{smc\_abc.py}.
+\texttt{abc\_rejection\_regression.py},
+\texttt{abc\_mcmc.py},
+\texttt{smc\_abc.py}, and
+\texttt{synthetic\_likelihood\_mcmc.py}.
 We consider an SIR epidemic evolving on an adaptive contact network with $N = 200$ agents. The network changes dynamically because susceptible individuals may rewire connections away from infected neighbors, so disease transmission and network topology are coupled rather than treated as separate mechanisms.
 
 The inferential target is the posterior distribution of the three model parameters
@@ -52,7 +53,7 @@ where $\beta$ is the transmission probability, $\gamma$ is the recovery probabil
 
 The likelihood of the observed data given $\theta$ is intractable. Even a single epidemic trajectory depends on the joint probability of many correlated infection, recovery, and rewiring events occurring over time on an evolving random graph. The contact network itself is a high-dimensional latent object, and inference would require marginalizing over an enormous collection of possible network histories that are never directly observed. In practice, this makes direct likelihood-based methods such as maximum likelihood estimation or standard conjugate Bayesian analysis infeasible.
 
-This motivates simulation-based inference, which bypasses explicit likelihood evaluation by comparing features of simulated and observed data. In this project the chosen SBI method is ABC, where simulated epidemics are accepted when their summary statistics are sufficiently close to the observed summary statistics. The advanced methods studied beyond basic rejection ABC are regression adjustment \citep{beaumont2002}, ABC-MCMC \citep{marjoram2003}, SMC-ABC, and synthetic likelihood MCMC \citep{wood2010}.
+This motivates simulation-based inference, which bypasses explicit likelihood evaluation by comparing features of simulated and observed data. In this project the chosen SBI method is ABC, where simulated epidemics are accepted when their summary statistics are sufficiently close to the observed summary statistics. The advanced methods studied beyond basic rejection ABC are regression adjustment \citep{beaumont2002}, ABC-MCMC \citep{marjoram2003}, SMC-ABC \citep{beaumont2009}, and synthetic likelihood MCMC \citep{wood2010}.
 
 The simulator in \texttt{simulator.py} uses an adaptive contact network with an Erd\H{o}s--R\'enyi initial graph of edge probability $p_{\text{edge}}=0.05$, $5$ initially infected individuals, and a horizon of $T=200$ discrete time steps. At each step the model applies infection, recovery, and network rewiring, so the network co-evolves with the epidemic throughout the simulation.
 
@@ -109,6 +110,8 @@ The ABC workflow follows a standard simulation-based inference pattern. Paramete
 \rho \sim \mathrm{Unif}(0,0.80),
 \]
 the epidemic is simulated, the eight summaries are computed, and the simulated summaries are compared with the observed summaries after standardization. This report first analyzes the basic ABC rejection results, then studies four extensions that move beyond the raw rejection posterior: regression adjustment, ABC-MCMC, SMC-ABC, and synthetic likelihood MCMC.
+
+The project repository used for this report is available at \url{https://github.com/haoyanggggg/st3247-simulation-project}.
 \section{Basic ABC Rejection}
 
 \subsection{Algorithm}
@@ -145,10 +148,10 @@ The eight summaries were chosen to cover both epidemic shape and network adaptat
 \toprule
 Summary statistic & Parameter informed & Notes \\
 \midrule
-Max infection fraction & $\beta$ & Captures overall outbreak size. In the implementation this is the maximum of the simulated infected-fraction trajectory. \\
+Max infection fraction & $\beta, \gamma$ & Captures overall outbreak size and peak height. In the implementation this is the maximum of the simulated infected-fraction trajectory, so it is informative about both transmission strength and the rate at which infections are removed. \\
 Time to peak & $\beta, \gamma$ & Captures how quickly the epidemic reaches its maximum. In the script this is the index of the peak infected fraction. \\
-Early growth rate of infection & $\beta, \gamma$ & Computed as the linear slope of $\log(I_t)$ over the early window $t=2,\dots,6$. This targets the initial expansion phase of the epidemic. \\
-Early growth rate of rewiring & mostly $\rho$ & Computed as the linear slope of $\log(W_t)$ over $t=2,\dots,6$. This measures how strongly rewiring activity builds up early in the outbreak. \\
+Early growth rate of infection & $\beta$ & Computed as the linear slope of $\log(I_t)$ over the early window $t=2,\dots,6$. This primarily targets the initial expansion phase of the epidemic before later decline effects become dominant. \\
+Early growth rate of rewiring & $\rho, \gamma$ & Computed as the linear slope of $\log(W_t)$ over $t=2,\dots,6$. This measures how strongly rewiring activity builds up early in the outbreak, mainly through rewiring intensity but also through how long infected individuals remain available to trigger rewiring. \\
 Variance structure of degree counts & $\rho$ & Computed from the final degree histogram. Higher rewiring changes the network away from the initial Erd\H{o}s--R\'enyi degree structure, so this summary is informative about network adaptation. \\
 Late decay rate of infection & $\gamma, \rho$ & Computed as the linear slope of $\log(I_t)$ over the late window $t=13,\dots,20$. This captures how quickly infection declines once recovery and rewiring effects have accumulated. \\
 Rewiring per infection & $\rho$ & Defined as total rewiring activity divided by total infection burden over the trajectory. This normalizes rewiring intensity by epidemic size. \\
@@ -160,6 +163,7 @@ Infection peak width at half maximum & $\beta, \gamma$ & Defined as the duration
 Taken together, the summaries combine early epidemic-shape information from maximum infection, time to peak, early infection growth, and peak width with network-adaptation information from early rewiring growth, degree variance, and rewiring per infection, while the late-decay summary captures how infection dies out after recovery and rewiring have both had time to act.
 
 \subsection{Epsilon Experimentation}
+\label{sec:epsilon-experimentation}
 
 The tolerance experiment in \texttt{abc\_rejection.py} compares the posterior under the three acceptance levels above. The main body focuses on the two critical conclusions. First, the posterior center is reasonably stable across the three tolerances, so the broad posterior location is not being determined by one arbitrary cutoff. Second, the posterior widens as $\epsilon$ is relaxed, especially in the upper tails of $\beta$ and $\rho$, which is the expected bias--variance trade-off in rejection ABC. The detailed summary-by-summary overlay discussion is deferred to Appendix~\ref{app:rejection-diagnostics}.
 
@@ -190,7 +194,7 @@ These results support $\epsilon=0.01$ as the basic-ABC working tolerance. Relati
 
 \subsection{Summary Statistics Experimentation}
 
-The next question is whether all eight summaries are needed. The same script, \texttt{abc\_rejection.py}, compares the full ``Rich set'' against reduced subsets A--J. In the current version of the project, the main selection evidence comes from two complementary diagnostics saved under \path{outputs/basic_abc/summary_set_study/}: posterior-comparison plots against the rich set and a heatmap of normalized posterior spread. The reduced sets defined in the script are summarized in Table~\ref{tab:reduced-sets}.
+The next question is whether all eight summaries are needed. The same script, \texttt{abc\_rejection.py}, compares the full ``Rich set'' against reduced subsets. The main selection evidence comes from two complementary diagnostics saved under \path{outputs/basic_abc/summary_set_study/}: posterior-comparison plots against the rich set and a heatmap of normalized posterior spread. The reduced sets defined in the script are summarized in Table~\ref{tab:reduced-sets}.
 
 \begin{table}[H]
 \centering
@@ -214,7 +218,7 @@ Reduced set J & max infection, time to peak, degree variance, rewiring per infec
 \end{tabular}
 \end{table}
 
-Figure~\ref{fig:summary-set-selection} isolates the current reference calibration used elsewhere in the report. The left panel compares the rich-set posterior with Reduced set J at $\epsilon=0.01$, while the right panel shows the updated posterior-spread heatmap. Numerically, the rich-set posterior means at $\epsilon=0.01$ are
+Figure~\ref{fig:summary-set-selection} isolates the reference calibration used elsewhere in the report. The left panel compares the rich-set posterior with Reduced set J at $\epsilon=0.01$, while the right panel shows the posterior-spread heatmap. Numerically, the rich-set posterior means at $\epsilon=0.01$ are
 \[
 (\mathbb{E}[\beta],\mathbb{E}[\gamma],\mathbb{E}[\rho]) = (0.1733,\ 0.0846,\ 0.3131),
 \]
@@ -228,37 +232,37 @@ These differences are negligible for the purposes of this analysis.
 \centering
 \begin{subfigure}[t]{0.48\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_j_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_j_eps-0.0100.png}
     \caption{Rich set versus Reduced set J.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.48\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_spread_heatmap_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_spread_heatmap.png}
     \caption{Posterior-spread heatmap.}
 \end{subfigure}
 \caption{Critical summary-set selection evidence from \texttt{abc\_rejection.py}. Reduced set J is the subset now exported for downstream methods and remains visually very close to the rich-set posterior.}
 \label{fig:summary-set-selection}
 \end{figure}
 
-The heatmap remains useful as a second diagnostic because it shows how posterior concentration changes across the full A--J comparison grid. For the current reference choice, the practical point is that Reduced set J preserves the rich-set posterior extremely closely while using only five summaries: maximum infection fraction, time to peak, degree variance, rewiring per infection, and infection peak width at half maximum.
+The heatmap remains useful as a second diagnostic because it shows how posterior concentration changes across the reduced-set comparison grid. For the chosen reference, the practical point is that Reduced set J preserves the rich-set posterior extremely closely while using only five summaries: maximum infection fraction, time to peak, degree variance, rewiring per infection, and infection peak width at half maximum. It is therefore the most defensible minimal subset retained in the report. That minimality matters in ABC because adding summaries without a clear inferential gain worsens the curse-of-dimensionality problem in the distance calculation.
 
-For the rest of the report, Reduced set J is therefore used as the reduced-summary reference posterior. This is also the subset currently exported by \texttt{abc\_rejection.py} into \texttt{data/intermediate/abc\_rejection\_output.npz} for downstream algorithms. All later extensions in this section inherit that choice directly, so the regression-adjustment, ABC-MCMC, SMC-ABC, and SL-MCMC analyses are all conditioned on the same Reduced set J calibration.
+For the rest of the report, Reduced set J is therefore used as the reduced-summary reference posterior. This is also the subset currently exported into \texttt{data/intermediate/abc\_rejection\_output.npz} for downstream algorithms. All later extensions in this section inherit that choice directly, so the regression-adjustment, ABC-MCMC, SMC-ABC, and SL-MCMC analyses are all conditioned on the same Reduced set J calibration.
 
 \subsection{Posterior Predictive Checks}
 
-The updated rejection-ABC analysis now includes posterior predictive checks on all three observables rather than only the infected trajectory. Figure~\ref{fig:ppc-all-observables} compares the posterior predictive median and 10--90\% predictive band with the observed mean and observed 10--90\% band for the infected fraction, rewiring counts, and final degree histogram under Reduced set J at $\epsilon=0.01$. The infected-fraction and rewiring-count trajectories are both reproduced reasonably well over the main dynamic region, and the final degree histogram is especially well matched: the observed curve lies very close to the predictive median over the central degree range. This is useful validation that the chosen posterior is not only matching one epidemic observable in isolation, but is also reproducing the network-adaptation signatures that motivated the richer summary design.
+The rejection-ABC analysis includes posterior predictive checks on all three observables rather than only the infected trajectory. Figure~\ref{fig:ppc-all-observables} compares the posterior predictive median and 10--90\% predictive band with the observed mean and observed 10--90\% band for the infected fraction, rewiring counts, and final degree histogram under Reduced set J at $\epsilon=0.01$. The infected-fraction and rewiring-count trajectories are both reproduced reasonably well over the main dynamic region, and the final degree histogram is especially well matched: the observed curve lies very close to the predictive median over the central degree range. This is useful validation that the chosen posterior is not only matching one epidemic observable in isolation, but is also reproducing the network-adaptation signatures that motivated the richer summary design.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.94\textwidth]{outputs/basic_abc/posterior_predictive_checks/ppc_all_observables_2026-04-19_04-39.png}
+\includegraphics[width=0.94\textwidth]{outputs/basic_abc/posterior_predictive_checks/ppc_all_observables.png}
 \caption{Posterior predictive checks for all three observables under Reduced set J at $\epsilon=0.01$. The solid lines show the posterior predictive median and observed mean, and the shaded bands show the corresponding 10--90\% ranges.}
 \label{fig:ppc-all-observables}
 \end{figure}
 
 \subsection{Joint Posteriors and Identifiability}
 
-The other missing diagnostic in the earlier draft was an explicit treatment of identifiability. Figure~\ref{fig:joint-posteriors} addresses this directly through the joint posterior geometry of the accepted Reduced set J sample. The $\beta$--$\rho$ panel shows the clearest dependence, with a strong positive correlation (empirically about $0.71$ in the saved posterior sample). This makes mechanistic sense: $\beta$ raises transmission across susceptible--infected edges, while $\rho$ removes those same edges through rewiring, so larger $\beta$ values can be partially offset by larger $\rho$ values while preserving similar peak size and timing. Degree-based and rewiring-based summaries help constrain this trade-off, but they do not remove it.
+Figure~\ref{fig:joint-posteriors} addresses identifiability directly through the joint posterior geometry of the accepted Reduced set J sample. The $\beta$--$\rho$ panel shows the clearest dependence, with a strong positive correlation (empirically about $0.71$ in the saved posterior sample). This makes mechanistic sense: $\beta$ raises transmission across susceptible--infected edges, while $\rho$ removes those same edges through rewiring, so larger $\beta$ values can be partially offset by larger $\rho$ values while preserving similar peak size and timing. Degree-based and rewiring-based summaries help constrain this trade-off, but they do not remove it.
 
 The $\gamma$--$\rho$ panel also shows residual confounding, now with a moderate negative correlation (about $-0.24$). Here both parameters suppress epidemic spread, but through different routes: $\gamma$ removes infected nodes through recovery, whereas $\rho$ suppresses transmission opportunities by severing susceptible--infected edges. The data therefore constrains a combined suppressive effect more clearly than it isolates recovery and rewiring separately. This is an important nuance: $\gamma$ is not unidentified, but its apparent marginal concentration should be interpreted together with the remaining $\gamma$--$\rho$ dependence rather than in isolation.
 
@@ -266,18 +270,18 @@ By contrast, the $\beta$--$\gamma$ panel is much weaker, with near-zero linear c
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.94\textwidth]{outputs/basic_abc/joint_posteriors/joint_posteriors_2026-04-19_04-39.png}
+\includegraphics[width=0.94\textwidth]{outputs/basic_abc/joint_posteriors/joint_posteriors.png}
 \caption{Joint posterior plots for the Reduced set J rejection posterior at $\epsilon=0.01$. The strongest residual parameter trade-offs involve $\rho$, especially in the $\beta$--$\rho$ and $\gamma$--$\rho$ panels.}
 \label{fig:joint-posteriors}
 \end{figure}
 
 \section{Extensions Beyond ABC-Rejection Posteriors}
 
-The methods in this section are motivated by the SBI literature on improving efficiency or reducing approximation bias beyond basic rejection ABC. In particular, regression adjustment follows the local-linear correction idea of \citet{beaumont2002}, ABC-MCMC follows the likelihood-free MCMC construction of \citet{marjoram2003}, SMC-ABC uses a sequential population update with progressively smaller distance thresholds, and synthetic likelihood MCMC follows the Gaussian synthetic-likelihood construction of \citet{wood2010}.
+The methods in this section are motivated by the SBI literature on improving efficiency or reducing approximation bias beyond basic rejection ABC. In particular, regression adjustment follows the local-linear correction idea of \citet{beaumont2002}, ABC-MCMC follows the likelihood-free MCMC construction of \citet{marjoram2003}, SMC-ABC follows the adaptive population-based ABC construction of \citet{beaumont2009}, and synthetic likelihood MCMC follows the Gaussian synthetic-likelihood construction of \citet{wood2010}.
 
 \subsection{Regression Adjusted}
 
-The script \texttt{abc\_rejection\_regression.py} now reads the Reduced set J calibration exported by \texttt{abc\_rejection.py} from \texttt{data/intermediate/abc\_rejection\_output.npz}. The regression adjustment therefore operates on the same standardized five-dimensional summary vector used by the updated rejection reference posterior,
+The script \texttt{abc\_rejection\_regression.py} implements the local-linear regression-adjustment idea of \citet{beaumont2002}. The motivation for adding this extension beyond basic rejection ABC is that accepted samples are only approximately matched to the observed summaries, not exactly matched. Regression adjustment post-processes those accepted draws using a local linear correction for the remaining summary mismatch, which can sharpen the posterior approximation without requiring additional simulator runs. The script reads the Reduced set J calibration exported by \texttt{abc\_rejection.py} from \texttt{data/intermediate/abc\_rejection\_output.npz}. The regression adjustment therefore operates on the same standardized five-dimensional summary vector used by the rejection reference posterior,
 \[
 (s_1,s_2,s_5,s_7,s_8),
 \]
@@ -295,7 +299,7 @@ In the current script, the same saved rejection reference pool is also reused to
 
 In implementation terms, \texttt{abc\_rejection\_regression.py} reuses the saved rejection-reference pool, forms accepted subsets at $\epsilon \in \{0.01,0.05,0.10\}$ by thresholding the saved distances, applies Epanechnikov weights inside each accepted subset, and fits a separate weighted linear regression for each of $\beta$, $\gamma$, and $\rho$ on the accepted summary vectors. Those fitted local slopes are then used to adjust each accepted draw back toward the observed summary vector before the script saves the adjusted posterior samples, the baseline-versus-adjusted overlay, and the cross-$\epsilon$ overlay plots.
 
-Figure~\ref{fig:regression-adjustment} highlights the two most informative new regression diagnostics. The left subfigure is the projected-summary-discrepancy diagnostic at $\epsilon=0.01$. There is a clear positive linear trend in all three parameter panels, especially for $\rho$: when the projected discrepancy is positive, the accepted parameter values tend to be larger, and when it is negative, they tend to be smaller. Accepted samples to the right of zero tend to overshoot the adjusted posterior mean, while those to the left tend to undershoot it, so a local linear correction is exactly the appropriate response. The right panel overlays the regression-adjusted posteriors at $\epsilon=0.01$, $\epsilon=0.05$, and $\epsilon=0.10$. To keep the extension sections comparable, Figure~\ref{fig:regression-baseline-overlay} then overlays the baseline Reduced set J rejection posterior with the $\epsilon=0.01$ regression-adjusted posterior. That comparison shows that the adjustment is a refinement rather than a qualitatively different answer: $\gamma$ is almost unchanged, while $\beta$ and $\rho$ move only modestly.
+Figure~\ref{fig:regression-adjustment} highlights the two most informative new regression diagnostics. The left subfigure is the projected-summary-discrepancy diagnostic at $\epsilon=0.01$. There is a clear positive linear trend in all three parameter panels, especially for $\rho$: when the projected discrepancy is positive, the accepted parameter values tend to be larger, and when it is negative, they tend to be smaller. Accepted samples to the right of zero tend to overshoot the adjusted posterior mean, while those to the left tend to undershoot it, so a local linear correction is exactly the appropriate response. The right panel overlays the regression-adjusted posteriors at $\epsilon=0.01$, $\epsilon=0.05$, and $\epsilon=0.10$. To keep the extension sections comparable, Figure~\ref{fig:regression-baseline-overlay} then overlays the baseline Reduced set J rejection posterior with the $\epsilon=0.01$ regression-adjusted posterior. That comparison shows that the adjusted posteriors for $\beta$, $\gamma$, and $\rho$ are all more concentrated than the baseline rejection posterior, with visibly smaller posterior spread and lighter tails. Under the current Reduced set J calibration, the regression-adjusted fit is therefore better concentrated than the baseline rejection-ABC fit.
 
 \begin{figure}[H]
 \centering
@@ -327,11 +331,11 @@ Numerically, the adjusted posterior means are
 \epsilon=0.05: (0.1728,\ 0.0850,\ 0.3163), \qquad
 \epsilon=0.10: (0.1784,\ 0.0863,\ 0.3171).
 \]
-The key comparison is between $\epsilon=0.01$ and $\epsilon=0.05$. Their adjusted posterior centers remain close, and the corresponding 95\% interval for $\rho$ changes only from $[0.2385,\ 0.3956]$ to $[0.2235,\ 0.4256]$. By contrast, $\epsilon=0.10$ begins to show more visible tail inflation, especially for $\beta$ and $\rho$. This is a useful statistical point: once regression adjustment is applied, the strictest tolerance is not automatically optimal. A looser tolerance such as $\epsilon=0.05$ uses many more accepted draws from the same reference pool ($5000$ rather than $1000$), so the fitted regression coefficients have lower Monte Carlo variance while the adjusted posterior remains broadly stable. In that sense, a moderately looser tolerance can actually give a higher-quality regression-adjusted posterior: it is smoother and more stable because the local linear correction is estimated from a larger accepted sample, yet it does not introduce any material shift in the posterior center.
+The key comparison is between $\epsilon=0.01$ and $\epsilon=0.05$. Their adjusted posterior centers remain close, and the corresponding 95\% interval for $\rho$ changes only from $[0.2385,\ 0.3956]$ to $[0.2235,\ 0.4256]$. By contrast, $\epsilon=0.10$ begins to show more visible tail inflation, especially for $\beta$ and $\rho$. This links directly back to the basic rejection-tolerance study in Section~\ref{sec:epsilon-experimentation} and the detailed overlays in Appendix~\ref{app:rejection-diagnostics}: even though unadjusted rejection ABC already looked too diffuse by $\epsilon=0.03$, the regression-adjusted analysis shows that a looser accepted set such as $\epsilon=0.05$ can still produce a concentrated posterior once the local linear correction is applied. In that sense, regression adjustment genuinely allows a looser effective tolerance than baseline basic ABC, although Figure~\ref{fig:regression-adjustment} also shows that this benefit does not continue indefinitely, since the $\epsilon=0.10$ adjusted posterior is clearly more dispersed.
 
 \subsection{ABC-MCMC}
 
-The next extension is implemented in \texttt{abc\_mcmc.py}. It follows the basic idea of performing MCMC while replacing the unavailable likelihood evaluation with an ABC acceptance rule \citep{marjoram2003}. Rather than recalibrating the problem from scratch, the script loads the updated Reduced set J rejection output from \texttt{data/intermediate/abc\_rejection\_output.npz}. This ensures that the summary subset, standardization constants, observed summary vector, and distance threshold are exactly the same as in the reference rejection run, making the comparison fair after the upstream changes to \texttt{abc\_rejection.py}.
+The next extension is implemented in \texttt{abc\_mcmc.py}. It follows the basic idea of performing MCMC while replacing the unavailable likelihood evaluation with an ABC acceptance rule \citep{marjoram2003}. The rationale for studying ABC-MCMC is that it can be more efficient than independent rejection ABC: instead of proposing parameters blindly from the prior each time, the sampler proposes new values locally from the current state of the chain, so repeated proposals are concentrated in regions that have already shown some posterior plausibility. Rather than recalibrating the problem from scratch, the script loads the Reduced set J rejection output from \texttt{data/intermediate/abc\_rejection\_output.npz}. This ensures that the summary subset, standardization constants, observed summary vector, and distance threshold are exactly the same as in the reference rejection run, making the comparison fair.
 
 The proposal mechanism is a Gaussian random walk with componentwise scales
 \[
@@ -380,7 +384,7 @@ which suggests that the basic rejection sample already captures the main posteri
 
 \subsection{SMC-ABC}
 
-The script \texttt{smc\_abc.py} implements a sequential Monte Carlo ABC extension on the same Reduced set J summary statistics exported by \texttt{abc\_rejection.py}. Unlike ABC-MCMC, which keeps a fixed distance threshold throughout the run, SMC-ABC evolves a particle population across a sequence of increasingly strict distance thresholds. In the current run, the four stages target the cumulative quantile thresholds
+The script \texttt{smc\_abc.py} implements a sequential Monte Carlo ABC extension \citep{beaumont2009} on the same Reduced set J summary statistics exported by \texttt{abc\_rejection.py}. The rationale for introducing SMC-ABC is that it is often more efficient than basic rejection ABC when the goal is to reach a small tolerance: instead of sampling directly from the prior and hoping to land near the observed summaries, it moves a particle population through a sequence of decreasing thresholds, with resampling and perturbation at each stage. Unlike ABC-MCMC, which keeps a fixed distance threshold throughout the run, SMC-ABC evolves a particle population across a sequence of increasingly strict distance thresholds. In the current run, the four stages target the cumulative quantile thresholds
 \[
 (0.10,\ 0.05,\ 0.02,\ 0.01),
 \]
@@ -394,7 +398,7 @@ with $N=300$ particles at each stage. The first stage samples from the prior unt
 \]
 applied to the accepted distance distribution of the previous SMC population.
 
-The saved diagnostics in \texttt{outputs/smc\_abc/smc\_abc\_diagnostics.csv} show the expected efficiency pattern as the target region contracts. The stagewise acceptance rates decrease from $11.00\%$ to $9.71\%$, $8.02\%$, and finally $7.33\%$. At the same time, the effective sample size remains high, moving only from $300.0$ in stage 1 to $289.4$, $287.1$, and $283.1$ by stage 4. This indicates that the particle system does not collapse severely even though the distance threshold becomes substantially tighter. The final adaptive threshold, $0.5127$, is slightly below the rejection reference threshold $0.5423$, so the final SMC target is comparable to, but somewhat tighter than, the updated basic-ABC baseline.
+The saved diagnostics in \texttt{outputs/smc\_abc/smc\_abc\_diagnostics.csv} show the expected efficiency pattern as the target region contracts. The stagewise acceptance rates decrease from $11.00\%$ to $9.71\%$, $8.02\%$, and finally $7.33\%$. At the same time, the effective sample size remains high, moving only from $300.0$ in stage 1 to $289.4$, $287.1$, and $283.1$ by stage 4. This indicates that the particle system does not collapse severely even though the distance threshold becomes substantially tighter. The final adaptive threshold, $0.5127$, is slightly below the rejection reference threshold $0.5423$, so the final SMC target is comparable to, but somewhat tighter than, the basic-ABC baseline.
 
 Figure~\ref{fig:smc-results} summarizes the SMC-ABC results. The left column compares the final SMC-ABC posterior against the Reduced set J rejection posterior used as reference, while the right column shows the stage-by-stage evolution of the SMC particle populations. The comparison histograms use matched sample counts, so visible differences are not artifacts of one method contributing many more draws than the other. The overlap is strong for all three parameters. The SMC-ABC posterior means are
 \[
@@ -406,9 +410,9 @@ which are close to the corresponding rejection-ABC means
 \]
 For $\beta$ and $\gamma$, the SMC and rejection posteriors are nearly indistinguishable in location, differing mainly through a mild smoothing of the histogram shape. For $\rho$, the SMC posterior is still centered in the same broad region but exhibits a slightly heavier upper tail. The 95\% posterior intervals from SMC-ABC are
 \[
-\beta \in [0.1113,\ 0.2533], \qquad
-\gamma \in [0.0612,\ 0.1116], \qquad
-\rho \in [0.1003,\ 0.5152].
+\beta \in [0.1114,\ 0.2499], \qquad
+\gamma \in [0.0614,\ 0.1113], \qquad
+\rho \in [0.1130,\ 0.5122].
 \]
 Compared with the rejection reference, the intervals for $\beta$ and especially $\rho$ are somewhat wider, but the substantive interpretation remains unchanged.
 
@@ -418,30 +422,38 @@ Taken together, the SMC results reinforce the same inferential conclusions seen 
 
 \subsubsection{Synthetic Truth Recovery}
 
-To validate the reliability of the SMC-ABC pipeline, we performed a synthetic-truth recovery run implemented in \texttt{synthetic\_recovery\_smc\_abc.py}. In this experiment, the "observed" data is replaced by a single synthetic realization generated from known ground-truth parameters:
+To validate the reliability of the SMC-ABC pipeline, we performed a synthetic-truth recovery run implemented in \texttt{synthetic\_recovery\_smc\_abc.py}. In this experiment, the ``observed'' target is replaced by synthetic summary statistics averaged over $40$ independent realizations generated from known ground-truth parameters:
 \[
 \theta^* = (\beta^*, \gamma^*, \rho^*) = (0.25, 0.08, 0.40).
 \]
-This allows us to evaluate whether the posterior distribution correctly covers the true parameter values under the same summary-statistic configuration (Reduced set J) used throughout the report.
+This ground-truth choice is deliberate. It lies comfortably inside the prior support rather than near any boundary, so the recovery task is not distorted by truncation effects. At the same time, it represents a plausible interior epidemic regime with non-negligible transmission, recovery, and rewiring, so all three mechanisms are active in the simulated trajectories and the resulting summary statistics remain informative for each parameter. The same truth is then reused for the SL-MCMC recovery study so that the two recovery experiments are directly comparable. That said, this remains only a one-point recovery exercise. To actually prove that the methodology is robust, one would need to perform formal simulation-based calibration (SBC): draw hundreds of parameter values from the prior, simulate data at each draw, rerun the full inference procedure, and verify that the rank statistics of the true parameters are approximately Uniform. A single point is therefore an anecdote rather than a full diagnostic. In this project, we do not carry out SBC because its computational cost would grow roughly linearly with the number of calibration draws, and each additional draw would require another full SMC-ABC or SL-MCMC inference run. Given the limited computational resources available, such a large-scale calibration study was unfortunately not feasible here.
+
+More precisely, the script repeatedly calls the same Reduced set J summary-statistic routine used by \texttt{smc\_abc.py}, averages those $40$ simulated summary vectors to form a synthetic observed-summary target, standardizes that target using the saved rejection-reference scaling, and then reruns the full four-stage SMC-ABC pipeline. This allows us to evaluate whether the posterior distribution correctly covers the true parameter values under the same summary-statistic configuration used throughout the report.
 
 The methodology follows the standard SMC-ABC workflow, with one additional step: the initial distance threshold is re-calibrated relative to the new synthetic target. Specifically, we recompute the distances of all reference simulations to the synthetic summary vector and set the stage-1 threshold to the $10\%$ quantile of these new distances. The sequential updates then tighten this threshold adaptively across four stages.
 
 The recovery diagnostics in \texttt{outputs/smc\_abc\_recovery/recovery\_diagnostics.csv} show that the algorithm converged through the adaptive distance schedule
 \[
-(0.7008,\ 0.5956,\ 0.4566,\ 0.3833),
+(0.7234,\ 0.5768,\ 0.4507,\ 0.3854),
 \]
-maintaining a robust effective sample size ($ESS \approx 280$) and a workable final acceptance rate of $5.57\%$.
+maintaining a robust final effective sample size ($ESS \approx 281.1$) and a workable final-stage acceptance rate of $6.36\%$.
 
-Figure~\ref{fig:recovery-results} presents the recovery posterior under the current Reduced set J calibration. The true parameter values (marked by the \textcolor{red}{red dashed lines}) remain inside the main posterior mass, but the recovery is broader than in the earlier six-summary calibration. The posterior means are
+Figure~\ref{fig:recovery-results} presents the recovery posterior under the Reduced set J calibration. The true parameter values (marked by the \textcolor{red}{red dashed lines}) remain inside the main posterior mass, but the recovery is visibly broader for $\beta$ and $\rho$ than for $\gamma$. The posterior means are
 \[
-(0.3087,\ 0.0760,\ 0.3726),
+(0.2810,\ 0.0810,\ 0.4246),
 \]
-so the recovery is strongest for $\gamma$ and notably weaker for $\beta$ and $\rho$.
+with empirical 95\% intervals
+\[
+\beta \in [0.1644,\ 0.4208], \qquad
+\gamma \in [0.0601,\ 0.1022], \qquad
+\rho \in [0.2233,\ 0.6296].
+\]
+Here $\theta^*=(0.25,0.08,0.40)$ is not inferred from the posterior; it is fixed by design as the known ground truth used to generate the synthetic target. The recovery assessment therefore asks how tightly and how accurately the recovery posterior concentrates around that known truth. By that criterion, recovery is strongest for $\gamma$: its posterior mean ($0.0810$) is closest to the true value $0.08$, and its 95\% interval is much narrower than those for $\beta$ and $\rho$. The corresponding intervals for $\beta$ and $\rho$ are much wider, so recovery is notably weaker for those two parameters.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.88\textwidth]{outputs/smc_abc_recovery/plots/synthetic_truth_recovery_smc_abc.png}
-\caption{Synthetic truth recovery results under Reduced set J. The \textcolor{red}{red dashed lines} indicate the true parameter values $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ used to generate the synthetic observed data.}
+\caption{Synthetic truth recovery results under Reduced set J. The \textcolor{red}{red dashed lines} indicate the true parameter values $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ used to generate the synthetic observed-summary target, and the green dotted lines with the shaded band indicate the posterior 95\% interval shown in the recovery plot.}
 \label{fig:recovery-results}
 \end{figure}
 
@@ -449,7 +461,7 @@ This recovery run still provides useful validation for the current Reduced set J
 
 \subsection{Synthetic Likelihood MCMC}
 
-The final extension is the implementation of Synthetic Likelihood MCMC (SL-MCMC), based on the methodology of \citet{wood2010}. Unlike ABC methods that rely on a distance-based kernel, SL-MCMC approximates the likelihood of the summary statistics $s$ using a multivariate Gaussian distribution. In the current implementation, the synthetic-likelihood approximation is built on the same Reduced set J summary vector exported by \texttt{abc\_rejection.py}, so the comparison with the ABC methods is again anchored to the same five-dimensional reference calibration:
+The final extension is the implementation of Synthetic Likelihood MCMC (SL-MCMC), based on the methodology of \citet{wood2010}. The rationale for studying synthetic likelihood is that it replaces the ABC distance-threshold comparison by an approximate likelihood model for the summaries themselves. Instead of accepting or rejecting simulations solely through a scalar discrepancy, SL-MCMC assumes that the summary statistics are approximately multivariate Gaussian conditional on the parameters, estimates the corresponding mean and covariance from repeated simulations, and then uses that synthetic likelihood inside an otherwise standard MCMC scheme. In the current implementation, the synthetic-likelihood approximation is built on the same Reduced set J summary vector exported by \texttt{abc\_rejection.py}, so the comparison with the ABC methods is again anchored to the same five-dimensional reference calibration:
 \[
 \log L_{SL}(\theta) = -\frac{1}{2} \left[ \log |\Sigma(\theta)| + (s_{\text{obs}} - \mu(\theta))^\top \Sigma(\theta)^{-1} (s_{\text{obs}} - \mu(\theta)) \right]
 \]
@@ -457,18 +469,29 @@ where $\mu(\theta)$ and $\Sigma(\theta)$ are the mean and covariance matrix of t
 
 \subsubsection{Assumption Check: Normality of Summaries}
 
-The core assumption of SL-MCMC is that the summary statistics follow a multivariate Gaussian distribution. We validated this by simulating $500$ realizations at the posterior mean. Figure~\ref{fig:sl-normality} shows the standardized histograms for the summaries used in the synthetic-likelihood approximation. While some summaries (like Max Infection) exhibit slight skewness, the majority align well with the Normal PDF overlays, and the Shapiro-Wilk p-values suggest that the Gaussian approximation is a reasonable surrogate for the true intractable likelihood in this model.
+The core assumption of SL-MCMC is that the summary statistics follow a multivariate Gaussian distribution. We examined this with a marginal normality diagnostic based on $500$ realizations simulated at the posterior mean. Figure~\ref{fig:sl-normality} shows that the evidence is mixed rather than uniformly strong. Some summaries, especially Early Rewire Slope and Max Infection, match the Gaussian overlays quite well and have comparatively high Shapiro--Wilk p-values ($0.467$ and $0.452$, respectively). Degree Variance is also reasonably regular ($p=0.308$), while Rewire/Inf is more borderline ($p=0.071$). However, Time to Peak and Peak Width are clearly non-normal (both $p=0.000$) and exhibit the discrete ``gaps'' or strong skewness visible in the histograms. This is plausible because those summaries are partly driven by discrete event-time features rather than by a smooth continuous measurement. The Gaussian assumption should therefore be interpreted as a pragmatic approximation that works better for some summaries than for others, not as an exact description of the full joint summary distribution.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.85\textwidth]{outputs/synthetic_likelihood_mcmc/diagnostics/assumption_check_normality.png}
-\caption{Assumption check for Synthetic Likelihood. Standardized histograms of the summaries used in the synthetic-likelihood approximation show reasonable agreement with the multivariate Gaussian assumption.}
+\caption{Assumption check for Synthetic Likelihood. The marginal diagnostics give mixed support for the Gaussian surrogate: Max Infection and Early Rewire Slope fit well, while Time to Peak and Peak Width remain visibly non-normal.}
 \label{fig:sl-normality}
+\end{figure}
+
+\subsubsection{Chain Diagnostics}
+
+The $30{,}000$-iteration SL-MCMC chain appears stable after the $5{,}000$-iteration burn-in, with no visible long-run drift in any parameter trace (Figure~\ref{fig:sl-diagnostics}). The empirical acceptance rate is $0.235$, which is very close to the adaptive random-walk target of $0.234$, and the post-burn-in effective sample sizes are approximately $995$ for $\beta$, $1904$ for $\gamma$, and $1034$ for $\rho$. These diagnostics support the view that the reported marginals are not artifacts of a poorly mixed chain, although $\beta$ and $\rho$ remain somewhat more autocorrelated than $\gamma$.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{outputs/synthetic_likelihood_mcmc/plots/synthetic_likelihood_mcmc_diagnostics.png}
+\caption{SL-MCMC trace diagnostics. The red dashed line marks the $5{,}000$-iteration burn-in used before posterior summaries are computed.}
+\label{fig:sl-diagnostics}
 \end{figure}
 
 \subsubsection{Posterior Comparison and Recovery}
 
-The SL-MCMC was run for $30{,}000$ iterations with a $5{,}000$ iteration burn-in. Figure~\ref{fig:sl-comparison} compares the resulting posterior with the current Reduced set J rejection-ABC reference at $\epsilon=0.01$. The synthetic-likelihood posterior is notably sharper and more concentrated for all three parameters. This increased precision is plausible because SL uses the estimated mean and covariance structure of the summaries rather than collapsing the discrepancy to a single scalar distance, although that gain comes at the cost of a stronger Gaussian-summary modeling assumption.
+The SL-MCMC was run for $30{,}000$ iterations with a $5{,}000$ iteration burn-in. Figure~\ref{fig:sl-comparison} compares the resulting posterior with the current Reduced set J rejection-ABC reference at $\epsilon=0.01$. The synthetic-likelihood posterior is notably sharper and more concentrated for all three parameters. This increased precision is plausible because SL uses the estimated mean and covariance structure of the summaries rather than collapsing the discrepancy to a single scalar distance, although that gain comes at the cost of a stronger Gaussian-summary modeling assumption. Relative to ABC-MCMC, Figure~\ref{fig:sl-vs-abc-mcmc} shows a very similar central region for $\gamma$ and $\rho$, together with a slightly lower center for $\beta$ and a clear variance reduction for all three parameters. This supports the interpretation of SL-MCMC as a smoother, more concentrated approximation to the same posterior region rather than a qualitatively different fit.
 
 \begin{figure}[H]
 \centering
@@ -477,12 +500,29 @@ The SL-MCMC was run for $30{,}000$ iterations with a $5{,}000$ iteration burn-in
 \label{fig:sl-comparison}
 \end{figure}
 
-Finally, we performed a synthetic-truth recovery run to evaluate the accuracy of the SL pipeline. Using the same ground truth $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ as in the SMC-ABC experiment, the SL-MCMC posterior remains centered in the vicinity of the known values (Figure~\ref{fig:sl-recovery}). The ground-truth parameters lie inside the main high-density regions, which is consistent with the view that the SL-MCMC pipeline can recover the model parameters reasonably well from known data under the current Reduced set J calibration.
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{outputs/synthetic_likelihood_mcmc/plots/synthetic_likelihood_vs_abc_mcmc_comparison.png}
+\caption{Posterior comparison: ABC-MCMC versus Synthetic Likelihood MCMC. The SL-MCMC marginals are narrower overall, while remaining centered in a similar region for $\gamma$ and $\rho$.}
+\label{fig:sl-vs-abc-mcmc}
+\end{figure}
+
+Finally, we performed a synthetic-truth recovery run to evaluate the accuracy of the SL pipeline. Using the same ground truth $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ as in the SMC-ABC experiment, the ``observed'' target is replaced by synthetic summary statistics averaged over $40$ independent realizations generated from the known ground-truth parameters. In implementation terms, \texttt{synthetic\_truth\_recovery\_sl.py} uses those averaged Reduced set J summaries as the synthetic target and then runs a $5{,}000$-iteration SL-MCMC verification chain with a $1{,}000$-iteration burn-in. Figure~\ref{fig:sl-recovery} presents the resulting recovery posterior, with the \textcolor{red}{red dashed lines} marking the known truth and the green dotted lines with the shaded band marking the empirical posterior 95\% intervals. The recovery posterior means are
+\[
+(0.2736,\ 0.0809,\ 0.4245),
+\]
+with empirical 95\% intervals
+\[
+\beta \in [0.1921,\ 0.3839], \qquad
+\gamma \in [0.0671,\ 0.0965], \qquad
+\rho \in [0.3043,\ 0.5763].
+\]
+Again, the ground truth is fixed by design rather than estimated from the posterior, so the relevant comparison is between the known truth and the location and spread of the recovery posterior. By that criterion, the SL-MCMC recovery is also sharpest for $\gamma$: its posterior mean is closest to the true value and its 95\% interval is the narrowest of the three. The corresponding intervals for $\beta$ and $\rho$ are materially wider, so recovery is notably weaker for those two parameters. The recovery plot therefore supports the same qualitative conclusion as the SMC-ABC recovery experiment: under the Reduced set J calibration, the SL-MCMC pipeline can recover the truth reasonably well, but recovery is sharper for $\gamma$ than for $\beta$ and $\rho$.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.85\textwidth]{outputs/sl_mcmc_recovery/plots/synthetic_truth_recovery_sl.png}
-\caption{Synthetic truth recovery for SL-MCMC. The \textcolor{red}{red dashed lines} represent the ground truth parameters used to generate the synthetic target.}
+\caption{Synthetic truth recovery for SL-MCMC. The \textcolor{red}{red dashed lines} indicate the true parameter values $(\beta^*=0.25, \gamma^*=0.08, \rho^*=0.40)$ used to generate the synthetic target, and the green dotted lines with the shaded band indicate the posterior 95\% interval shown in the recovery plot.}
 \label{fig:sl-recovery}
 \end{figure}
 
@@ -533,29 +573,31 @@ Finally, we performed a synthetic-truth recovery run to evaluate the accuracy of
 
 \section{Conclusion and Discussion}
 
-The report supports a consistent substantive conclusion across all inference schemes. Reduced set J is now the preferred reduced-summary calibration because it remains very close to the rich-set posterior while using only five summaries, namely maximum infection fraction, time to peak, degree variance, rewiring per infection, and infection peak width at half maximum. Under that calibration, the ABC-family methods place the main posterior mass in broadly the same region: $\beta$ and $\gamma$ are reasonably stable across rejection ABC, regression adjustment, ABC-MCMC, and SMC-ABC, while $\rho$ remains the least sharply identified parameter. SL-MCMC is more concentrated, but it is still centered in a broadly compatible region. The regression-adjustment analysis further shows that a looser rejection threshold such as $\epsilon=0.05$ can still yield a similar corrected posterior, and the synthetic-truth recovery experiments for SMC-ABC and SL-MCMC provide additional evidence that the updated pipeline still recovers the truth with acceptable coverage, albeit less sharply for $\beta$ and $\rho$ than for $\gamma$.
+The report supports a consistent substantive conclusion across all inference schemes. Reduced set J is the preferred reduced-summary calibration because it remains very close to the rich-set posterior while using only five summaries, namely maximum infection fraction, time to peak, degree variance, rewiring per infection, and infection peak width at half maximum. It is the most defensible minimal subset once the curse-of-dimensionality issue in ABC is taken seriously. Under that calibration, all methods place the main posterior mass in broadly the same region: $\beta$ and $\gamma$ are reasonably stable across rejection ABC, regression adjustment, ABC-MCMC, SMC-ABC, and SL-MCMC, while $\rho$ remains the least sharply identified parameter. The synthetic-truth recovery experiments for SMC-ABC and SL-MCMC provide additional evidence that the pipeline still recovers the truth with acceptable coverage, albeit less sharply for $\beta$ and $\rho$ than for $\gamma$.
 
 \begin{table}[H]
 \centering
 \small
-\begin{tabular}{lrrrrl}
+\begin{tabular}{lrrrl}
 \hline
-Method & Calls & Time (s) & Posterior $n$ & Acc. rate & ESS \\
+Method & Calls & Time (s) & Posterior $n$ & ESS \\
 \hline
-Rejection ABC & 100000 & 51.5 & 1000 & 0.0100 & n/a \\
-Regression adjustment & 100000 & 51.5 & 1000 & 0.0100 & n/a \\
-ABC-MCMC & 29723 & 289.4 & 27001 & 0.1824 & 214--522 \\
-SMC-ABC & 11368 & 71.7 & 300 & 0.1056 & 283.1 \\
-SL-MCMC & 899460 & 110.6 & 25000 & 0.2352 & 995--1904 \\
+Rejection ABC & 100000 & 51.5 & 1000 & n/a \\
+Regression adjustment & 100000 & 51.5 & 1000 & n/a \\
+ABC-MCMC & 29723 & 289.4 & 27001 & 214--522 \\
+SMC-ABC & 11368 & 71.7 & 300 & 283.1 \\
+SL-MCMC & 899460 & 110.6 & 25000 & 995--1904 \\
 \hline
 \end{tabular}
 \caption{Runtime summary from \texttt{outputs/runtime\_summary.csv}. For regression adjustment, the simulator-call and wall-clock entries are inherited from the underlying rejection-ABC reference run because the adjustment is a post-processing correction applied to the saved rejection sample. ESS is reported only where applicable: the MCMC entries show the range of parameterwise ESS values across $(\beta,\gamma,\rho)$, while SMC-ABC reports the final weighted-particle ESS.}
 \label{tab:runtime-summary}
 \end{table}
 
-Table~\ref{tab:runtime-summary} shows that the algorithms are not rankable by a single metric. If the criterion is simulator-call efficiency, the ordering is SMC-ABC first, then ABC-MCMC, then rejection ABC and regression adjustment, with SL-MCMC by far the most expensive because each synthetic-likelihood evaluation averages over $30$ replicate simulations. If the criterion is wall-clock time under the current implementation, the ordering changes: rejection ABC is fastest, SMC-ABC is second, SL-MCMC is third, and ABC-MCMC is slowest. This difference is itself informative. Rejection ABC parallelizes almost perfectly across independent prior simulations, whereas ABC-MCMC is constrained by sequential chain dependence. SL-MCMC uses many more simulator calls than the ABC methods, but the optimized simulator and parallel replicate evaluations keep its wall-clock time below ABC-MCMC.
+The overlay plots make the inferential trade-offs especially clear. Figure~\ref{fig:regression-baseline-overlay} shows that regression adjustment produces the most obvious improvement within the ABC family relative to baseline rejection ABC: the adjusted posteriors for $\beta$, $\gamma$, and $\rho$ are all more concentrated, with visibly smaller posterior spread. Figure~\ref{fig:mcmc-comparison} shows that ABC-MCMC remains centered in essentially the same region as baseline rejection ABC, with broadly similar posterior spread but many more retained draws. Figure~\ref{fig:smc-results} shows that SMC-ABC also preserves the same posterior center while mildly smoothing the marginals, though $\rho$ still retains a fairly broad upper tail. Figures~\ref{fig:sl-comparison} and \ref{fig:sl-vs-abc-mcmc} show that SL-MCMC is the most concentrated of all the methods, but that extra sharpness comes from a stronger modeling assumption and a substantially larger simulation budget.
 
-The practical ranking therefore depends on the goal. For the fastest baseline posterior, rejection ABC remains the strongest starting point, and regression adjustment is best viewed as a low-cost refinement of that same reference sample rather than a separate simulator budget. For simulator efficiency within the ABC family, SMC-ABC is the strongest option because it reaches a comparable posterior with the fewest simulator calls and a high final ESS. ABC-MCMC is useful when one wants many posterior draws under the same ABC target, but in the current implementation it pays a clear wall-clock penalty for chain dependence. SL-MCMC produces the sharpest posteriors and the highest MCMC ESS values, but it does so under a much larger simulation budget and a stronger Gaussian-summary assumption. Taken together, the most balanced recommendation for this project is: use rejection ABC or regression-adjusted rejection ABC as the primary reference analysis, use SMC-ABC as the most efficient alternative ABC sampler, and interpret SL-MCMC as a useful but more model-dependent high-precision benchmark.
+Table~\ref{tab:runtime-summary} shows that the algorithms are not rankable by a single metric. If the criterion is simulator-call efficiency, the ordering is SMC-ABC first, then ABC-MCMC, then rejection ABC and regression adjustment, with SL-MCMC by far the most computationally expensive because each synthetic-likelihood evaluation averages over $30$ replicate simulations. If the criterion is wall-clock time under the current implementation, rejection ABC is fastest, SMC-ABC is second, SL-MCMC is third, and ABC-MCMC is slowest. This difference is itself informative. Rejection ABC parallelizes almost perfectly across independent prior simulations, whereas ABC-MCMC is constrained by sequential chain dependence. SL-MCMC uses many more simulator calls than the ABC methods, but the optimized simulator and parallel replicate evaluations keep its wall-clock time below ABC-MCMC.
+
+The practical ranking therefore \textit{depends on the goal}. For a fast baseline analysis, rejection ABC remains the strongest starting point, while regression adjustment is the most attractive low-cost improvement because it achieves visibly better concentration without an additional simulator budget. For simulator efficiency within the ABC family, SMC-ABC is the strongest option because it reaches a comparable posterior with the fewest simulator calls and a high final ESS. ABC-MCMC is useful when one wants many posterior draws under the same ABC target, but in the current implementation it pays a clear wall-clock penalty for chain dependence. SL-MCMC produces the sharpest posteriors and the highest MCMC ESS values, but it does so under a much larger simulation budget and a stronger Gaussian-summary assumption. Taken together, the most balanced recommendation for this project is: use rejection ABC as the baseline reference, use regression-adjusted ABC when a more concentrated correction is desired at low extra cost, use SMC-ABC as the most efficient alternative ABC sampler, and interpret SL-MCMC as a useful but more model-dependent and computationally expensive high-precision benchmark.
 
 \appendix
 \renewcommand{\thesection}{Appendix \Alph{section}}
@@ -592,13 +634,13 @@ The degree-variance, rewiring-per-infection, and peak-width diagnostics are part
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Max infection fraction_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Max infection fraction_overlay_eps.png}}
     \caption{Maximum infection fraction diagnostic overlay.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Time to peak_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Time to peak_overlay_eps.png}}
     \caption{Time to peak diagnostic overlay.}
 \end{subfigure}
 \caption{First group of rejection-ABC sanity-check plots used to assess the tolerance choice.}
@@ -609,13 +651,13 @@ The degree-variance, rewiring-per-infection, and peak-width diagnostics are part
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Early growth rate of infection_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Early growth rate of infection_overlay_eps.png}}
     \caption{Early infection growth diagnostic overlay.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Early growth rate of rewiring_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Early growth rate of rewiring_overlay_eps.png}}
     \caption{Early rewiring growth diagnostic overlay.}
 \end{subfigure}
 \caption{Second group of rejection-ABC sanity-check plots used to assess the tolerance choice.}
@@ -626,13 +668,13 @@ The degree-variance, rewiring-per-infection, and peak-width diagnostics are part
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Variance structure of degree counts_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Variance structure of degree counts_overlay_eps.png}}
     \caption{Degree-variance diagnostic overlay.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Late decay rate of infection_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Late decay rate of infection_overlay_eps.png}}
     \caption{Late infection decay diagnostic overlay.}
 \end{subfigure}
 \caption{Third group of rejection-ABC sanity-check plots used to assess the tolerance choice.}
@@ -643,13 +685,13 @@ The degree-variance, rewiring-per-infection, and peak-width diagnostics are part
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Rewiring per infection_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Rewiring per infection_overlay_eps.png}}
     \caption{Rewiring-per-infection diagnostic overlay.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Infection peak width at half maximum_overlay_eps_2026-04-19_04-39.png}}
+\includegraphics[width=\linewidth]{\detokenize{outputs/basic_abc/sanity_check/summary_Infection peak width at half maximum_overlay_eps.png}}
     \caption{Peak-width-at-half-maximum diagnostic overlay.}
 \end{subfigure}
 \caption{Fourth group of rejection-ABC sanity-check plots used to assess the tolerance choice.}
@@ -658,21 +700,21 @@ The degree-variance, rewiring-per-infection, and peak-width diagnostics are part
 
 \subsubsection{Full summary-set comparison gallery}
 
-The next question is how the reduced-summary comparison changed once rewiring per infection and peak width were added to the full summary set. The main text already gave the decisive answer for the current code state: Reduced set J is the reduced summary now exported by \texttt{abc\_rejection.py}. Figures~\ref{fig:appendix-summary-comparisons-1}--\ref{fig:appendix-summary-comparisons-5} collect the full rich-set versus reduced-set gallery for sets A--J at $\epsilon = 0.01$.
+The next question is how the reduced-summary candidates compare visually to the rich-set posterior. The main text already gave the decisive answer: Reduced set J is the reduced summary exported by \texttt{abc\_rejection.py}. Figures~\ref{fig:appendix-summary-comparisons-1}--\ref{fig:appendix-summary-comparisons-5} collect the rich-set versus reduced-set gallery for sets A--J at $\epsilon = 0.01$.
 
-Two points are worth noting. First, the old Reduced set E remains competitive, but it is no longer the natural endpoint once the two new summaries are introduced. Second, the later sets G, H, I, and J are the relevant competitors after the update because they explicitly incorporate rewiring per infection, and sets I and J also retain the epidemic peak-width statistic. The current change from I to J is specifically the removal of early rewiring growth from the exported reduced-summary calibration.
+The practical takeaway from this gallery is that the reduced sets differ mainly through posterior spread rather than drastic shifts in posterior center. Among the candidates shown here, Reduced set J gives one of the closest visual matches to the rich-set posterior while keeping the summary dimension low.
 
 \begin{figure}[H]
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_a_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_a_eps-0.0100.png}
     \caption{Rich set versus Reduced set A.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_b_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_b_eps-0.0100.png}
     \caption{Rich set versus Reduced set B.}
 \end{subfigure}
 \caption{First group of rich-set versus reduced-set posterior comparisons at $\epsilon = 0.01$.}
@@ -683,13 +725,13 @@ Two points are worth noting. First, the old Reduced set E remains competitive, b
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_c_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_c_eps-0.0100.png}
     \caption{Rich set versus Reduced set C.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_d_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_d_eps-0.0100.png}
     \caption{Rich set versus Reduced set D.}
 \end{subfigure}
 \caption{Second group of rich-set versus reduced-set posterior comparisons at $\epsilon = 0.01$.}
@@ -700,13 +742,13 @@ Two points are worth noting. First, the old Reduced set E remains competitive, b
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_e_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_e_eps-0.0100.png}
     \caption{Rich set versus Reduced set E.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_f_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_f_eps-0.0100.png}
     \caption{Rich set versus Reduced set F.}
 \end{subfigure}
 \caption{Third group of rich-set versus reduced-set posterior comparisons at $\epsilon = 0.01$.}
@@ -717,13 +759,13 @@ Two points are worth noting. First, the old Reduced set E remains competitive, b
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_g_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_g_eps-0.0100.png}
     \caption{Rich set versus Reduced set G.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_h_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_h_eps-0.0100.png}
     \caption{Rich set versus Reduced set H.}
 \end{subfigure}
 \caption{Fourth group of rich-set versus reduced-set posterior comparisons at $\epsilon = 0.01$.}
@@ -734,16 +776,16 @@ Two points are worth noting. First, the old Reduced set E remains competitive, b
 \centering
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_i_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_i_eps-0.0100.png}
     \caption{Rich set versus Reduced set I.}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.49\textwidth}
     \centering
-    \includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_j_eps-0.0100_2026-04-19_04-39.png}
+\includegraphics[width=\linewidth]{outputs/basic_abc/summary_set_study/posterior_rich_set_vs_reduced_set_j_eps-0.0100.png}
     \caption{Rich set versus Reduced set J.}
 \end{subfigure}
-\caption{Fifth group of rich-set versus reduced-set posterior comparisons at $\epsilon = 0.01$, including the current exported reference subset Reduced set J.}
+\caption{Fifth group of rich-set versus reduced-set posterior comparisons at $\epsilon = 0.01$ for Reduced sets I and J.}
 \label{fig:appendix-summary-comparisons-5}
 \end{figure}
 
@@ -758,6 +800,11 @@ Beaumont, Mark~A., Wenyang Zhang, and David~J. Balding. 2002.
 Marjoram, Paul, John Molitor, Vincent Plagnol, and Simon Tavar\'e. 2003.
 ``Markov Chain Monte Carlo Without Likelihoods.''
 \emph{Proceedings of the National Academy of Sciences} 100 (26): 15324--15328.
+
+\bibitem[Beaumont et~al.(2009)Beaumont, Cornuet, Marin, and Robert]{beaumont2009}
+Beaumont, Mark~A., Jean-Marie Cornuet, Jean-Michel Marin, and Christian~P. Robert. 2009.
+``Adaptive Approximate Bayesian Computation.''
+\emph{Biometrika} 96 (4). Oxford University Press: 983--990.
 
 \bibitem[Wood(2010)]{wood2010}
 Wood, Simon~N. 2010.

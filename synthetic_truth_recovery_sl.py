@@ -93,8 +93,28 @@ def run_recovery_sl_mcmc():
     
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     for j, p in enumerate(PARAMETER_NAMES):
+        lower_95, upper_95 = np.quantile(post[:, j], [0.025, 0.975])
         axes[j].hist(post[:, j], bins=30, alpha=0.6, color='skyblue', density=True, label="SL-MCMC Posterior")
         axes[j].axvline(TRUE_PARAMS[j], color='red', linestyle='--', lw=2, label=f"True value = {TRUE_PARAMS[j]:.3f}")
+        axes[j].axvline(
+            lower_95,
+            color='darkgreen',
+            linestyle=':',
+            linewidth=2,
+            label=f"95% CI = [{lower_95:.3f}, {upper_95:.3f}]",
+        )
+        axes[j].axvline(
+            upper_95,
+            color='darkgreen',
+            linestyle=':',
+            linewidth=2,
+        )
+        axes[j].axvspan(
+            lower_95,
+            upper_95,
+            color='darkgreen',
+            alpha=0.08,
+        )
         axes[j].set_xlabel(p)
         axes[j].set_title(f"Recovery: {p}")
         axes[j].legend()

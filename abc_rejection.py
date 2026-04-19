@@ -61,7 +61,6 @@ import pandas as pd
 from simulator import simulate
 from observed_summaries import get_obs_summaries
 from tqdm import tqdm
-from datetime import datetime
 import matplotlib.pyplot as plt
 import os
 import multiprocessing as mp
@@ -84,16 +83,16 @@ N_sim = 100_000 # with threshold of 1%, we will have 300 accepted samples for po
 degree_counts_max = 30 + 1
 epsilon = 1e-8
 seed = 2026
-# SUMMARY STATISTIC 1: Max infection fraction INFORMS BETA/GAMMA
-# SUMMARY STATISTIC 2: Time to peak INFORMS BETA/GAMMA
-# SUMMARY STATISTIC 3: Early growth rate INFORMS BETA/GAMMA
+# SUMMARY STATISTIC 1: Max infection fraction
+# SUMMARY STATISTIC 2: Time to peak
+# SUMMARY STATISTIC 3: Early growth rate
 # SUMMARY STATISTIC 4: Mean rewire counts during early infection
-# SUMMARY STATISTIC 5: Variance structure of degree counts INFORMS RHO
+# SUMMARY STATISTIC 5: Variance structure of degree counts 
 #                      ↑rho = distortion from Erdos-Renyi random graph's binomial distribution
 #                      ↓rho = closer to binomial distribution
-# SUMMARY STATISTIC 6: Decay structure of infection INFORMS RHO
-# SUMMARY STATISTIC 7: Rewiring per infection INFORMS RHO
-# SUMMARY STATISTIC 8: Infection peak width at half maximum INFORMS GAMMA
+# SUMMARY STATISTIC 6: Decay structure of infection 
+# SUMMARY STATISTIC 7: Rewiring per infection 
+# SUMMARY STATISTIC 8: Infection peak width at half maximum
 
 summary_statistics_name = [
     "Max infection fraction",
@@ -198,7 +197,6 @@ SUMMARY_SET_INDICES = {
 
 }
 
-# compare between A, C, I, Rich sets to see how the presence/absence of certain summaries affects the posterior, and whether the effect is consistent with our understanding of which summaries inform which parameters
 SUMMARY_SET_COMPARISONS = (
     ("Rich set", "Reduced set A"),
     ("Rich set", "Reduced set B"),
@@ -613,7 +611,7 @@ def save_samples_and_plots(simulated_summary_statistics,
         * Four overlaid histograms are plotted, one for each acceptance ε.
         * The observed value is shown as a red vertical line.
     - Accepted parameter samples are filtered and saved separately for each ε threshold.
-    - A timestamp is generated to uniquely label outputs.
+    - Output filenames are deterministic so reruns overwrite the same artifacts.
 
     Outputs
     -------
@@ -635,7 +633,6 @@ def save_samples_and_plots(simulated_summary_statistics,
     -------
     None
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     simulated_summary_statistics = np.array(simulated_summary_statistics)
     if acceptance_epsilon_list is None:
         acceptance_epsilon_list = [0.005, 0.01, 0.02]
@@ -669,7 +666,7 @@ def save_samples_and_plots(simulated_summary_statistics,
         plt.xlabel("Value")
         plt.ylabel("Density")
         plt.legend()
-        plot_path = SANITY_CHECK_DIR / f"summary_{summary_statistics_name[i]}_overlay_eps_{timestamp}.png"
+        plot_path = SANITY_CHECK_DIR / f"summary_{summary_statistics_name[i]}_overlay_eps.png"
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         if show_plots:
             plt.show()
@@ -681,7 +678,7 @@ def save_samples_and_plots(simulated_summary_statistics,
         accepted_parameters = [params for params, keep in zip(simulated_parameters, accepted_idx) if keep]
         print(f"[ABC] ε={acceptance_epsilon:.4f}: accepted {len(accepted_parameters)} / {len(simulated_parameters)} simulations")
         final_chosen_posteriors = pd.DataFrame(accepted_parameters, columns=['beta', 'gamma', 'rho'])
-        filename = f"abc-basic_eps-{acceptance_epsilon:.4f}_{timestamp}.csv"
+        filename = f"abc-basic_eps-{acceptance_epsilon:.4f}.csv"
         csv_path = PARAM_ESTIMATES_DIR / filename
         final_chosen_posteriors.to_csv(csv_path, index=False)
 
@@ -691,7 +688,6 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
                                     comparison_epsilon=POSTERIOR_COMPARISON_EPSILON,
                                     show_pairs=None):
     """Plot rich-set posterior overlays against the requested reduced summary sets."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
     observed_summary_statistics = np.asarray(observed_summary_statistics, dtype=np.float64)
     simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
@@ -750,7 +746,7 @@ def plot_posterior_comparison_plots(simulated_summary_statistics,
         )
         plot_path = (
             SUMMARY_SET_STUDY_DIR  
-            / f"posterior_{comparison_slug}_eps-{comparison_epsilon:.4f}_{timestamp}.png"
+            / f"posterior_{comparison_slug}_eps-{comparison_epsilon:.4f}.png"
         )
 
         fig.savefig(plot_path, dpi=300, bbox_inches='tight')
@@ -767,7 +763,6 @@ def save_summary_set_outputs(summary_set_name,
                              acceptance_epsilon_list=None,
                              show_plots=True):
     """Save accepted-summary plots and posterior samples for one chosen summary set."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     simulated_summary_statistics = np.asarray(simulated_summary_statistics, dtype=np.float64)
     observed_summary_statistics = np.asarray(observed_summary_statistics, dtype=np.float64)
     simulated_parameters = np.asarray(simulated_parameters, dtype=np.float64)
@@ -814,7 +809,7 @@ def save_summary_set_outputs(summary_set_name,
         plt.legend()
         plot_path = (
             sanity_check_dir
-            / f"{summary_set_slug}_summary_{summary_statistics_name[summary_idx]}_overlay_eps_{timestamp}.png"
+            / f"{summary_set_slug}_summary_{summary_statistics_name[summary_idx]}_overlay_eps.png"
         )
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         if show_plots:
@@ -829,7 +824,7 @@ def save_summary_set_outputs(summary_set_name,
             f"accepted {accepted_parameters.shape[0]} / {simulated_parameters.shape[0]} simulations"
         )
         final_chosen_posteriors = pd.DataFrame(accepted_parameters, columns=['beta', 'gamma', 'rho'])
-        filename = f"{summary_set_slug}_abc-basic_eps-{acceptance_epsilon:.4f}_{timestamp}.csv"
+        filename = f"{summary_set_slug}_abc-basic_eps-{acceptance_epsilon:.4f}.csv"
         csv_path = param_estimates_dir / filename
         final_chosen_posteriors.to_csv(csv_path, index=False)
 
@@ -934,7 +929,6 @@ def plot_posterior_predictive_checks(simulated_summary_statistics,
     - Rewiring counts time series  
     - Final degree histogram
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     PPC_DIR.mkdir(parents=True, exist_ok=True)
 
     # Get accepted parameters from reference set
@@ -1053,7 +1047,7 @@ def plot_posterior_predictive_checks(simulated_summary_statistics,
         f"(ε={comparison_epsilon}, n={len(ppc_params)} samples)"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    plot_path = PPC_DIR / f"ppc_all_observables_{timestamp}.png"
+    plot_path = PPC_DIR / "ppc_all_observables.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
     if show_plot:
         plt.show()
@@ -1150,7 +1144,6 @@ def plot_joint_posteriors(simulated_parameters,
     - gamma vs rho: main identifiability problem
     - beta vs gamma: jointly determine epidemic size/speed
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     JOINT_POSTERIOR_DIR.mkdir(parents=True, exist_ok=True)
 
     reference_distances = compute_distances_for_summary_set(
@@ -1204,7 +1197,7 @@ def plot_joint_posteriors(simulated_parameters,
         f"(ε={comparison_epsilon}, n={posterior.shape[0]})"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    plot_path = JOINT_POSTERIOR_DIR / f"joint_posteriors_{timestamp}.png"
+    plot_path = JOINT_POSTERIOR_DIR / "joint_posteriors.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
     if show_plot:
         plt.show()
@@ -1224,7 +1217,6 @@ def plot_marginal_posteriors(simulated_parameters,
     if acceptance_epsilon_list is None:
         acceptance_epsilon_list = [0.005, 0.01, 0.03]
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     MARGINAL_POSTERIOR_DIR.mkdir(parents=True, exist_ok=True)
 
     reference_distances = compute_distances_for_summary_set(
@@ -1261,7 +1253,7 @@ def plot_marginal_posteriors(simulated_parameters,
 
     fig.suptitle(f"Marginal posteriors — {REFERENCE_SUMMARY_SET_NAME}")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    plot_path = MARGINAL_POSTERIOR_DIR / f"marginal_posteriors_{timestamp}.png"
+    plot_path = MARGINAL_POSTERIOR_DIR / "marginal_posteriors.png"
     fig.savefig(plot_path, dpi=300, bbox_inches='tight')
     if show_plot:
         plt.show()
@@ -1459,7 +1451,7 @@ def main() -> None:
     
     plot_posterior_spread_heatmap(
         spread_df,
-        SUMMARY_SET_STUDY_DIR / f"posterior_spread_heatmap_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.png",
+        SUMMARY_SET_STUDY_DIR / "posterior_spread_heatmap.png",
         show_plot=False,
     )
 

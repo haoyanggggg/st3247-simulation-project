@@ -105,13 +105,17 @@ def run_recovery_smc_abc(rng: np.random.Generator,
 def plot_recovery_results(smc_results: dict,
                           true_parameters: np.ndarray,
                           output_dir: Path) -> None:
-    """Plot recovery results in a 1x3 grid with truth labeled as 'mean of accepted values'."""
+    """Plot recovery posteriors with the truth and posterior 95% intervals."""
     output_dir.mkdir(parents=True, exist_ok=True)
     posterior_samples = smc_results["posterior_samples"]
     
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     
     for param_idx, param_name in enumerate(PARAMETER_NAMES):
+        lower_95, upper_95 = np.quantile(
+            posterior_samples[:, param_idx],
+            [0.025, 0.975],
+        )
         axes[param_idx].hist(
             posterior_samples[:, param_idx],
             bins=20,
@@ -126,6 +130,25 @@ def plot_recovery_results(smc_results: dict,
             linestyle='--',
             linewidth=2,
             label=f"True value = {true_parameters[param_idx]:.3f}",
+        )
+        axes[param_idx].axvline(
+            lower_95,
+            color='darkgreen',
+            linestyle=':',
+            linewidth=2,
+            label=f"95% CI = [{lower_95:.3f}, {upper_95:.3f}]",
+        )
+        axes[param_idx].axvline(
+            upper_95,
+            color='darkgreen',
+            linestyle=':',
+            linewidth=2,
+        )
+        axes[param_idx].axvspan(
+            lower_95,
+            upper_95,
+            color='darkgreen',
+            alpha=0.08,
         )
         axes[param_idx].set_xlabel(param_name)
         axes[param_idx].set_ylabel("Density")

@@ -72,10 +72,17 @@ def write_runtime_summary(*,
 
     existing_rows: list[dict[str, str]] = []
     if output_path.exists():
-        with output_path.open("r", newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                existing_rows.append({field: row.get(field, "") for field in FIELDNAMES})
+        try:
+            with output_path.open("r", newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    existing_rows.append({field: row.get(field, "") for field in FIELDNAMES})
+        except PermissionError:
+            print(
+                f"[runtime_summary] Skipping update for {method_name}: "
+                f"could not read locked file {output_path}."
+            )
+            return
 
     updated = False
     for row in existing_rows:
@@ -89,7 +96,13 @@ def write_runtime_summary(*,
 
     existing_rows.sort(key=lambda row: row["method_name"])
 
-    with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        writer.writerows(existing_rows)
+    try:
+        with output_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
+            writer.writeheader()
+            writer.writerows(existing_rows)
+    except PermissionError:
+        print(
+            f"[runtime_summary] Skipping update for {method_name}: "
+            f"could not write locked file {output_path}."
+        )
