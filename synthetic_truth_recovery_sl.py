@@ -36,7 +36,17 @@ def run_recovery_sl_mcmc():
     
     # Load calibration manually
     with np.load(REFERENCE_RESULTS_PATH, allow_pickle=True) as data:
-        calibration = {"summary_mu": data["summary_mu"], "summary_sigma": data["summary_sigma"]}
+        calibration_summary_indices = tuple(
+            np.asarray(
+                data["summary_indices"] if "summary_indices" in data else SUMMARY_INDICES,
+                dtype=np.int64,
+            ).tolist()
+        )
+        calibration = {
+            "summary_mu": np.asarray(data["summary_mu"], dtype=np.float64),
+            "summary_sigma": np.asarray(data["summary_sigma"], dtype=np.float64),
+            "summary_indices": calibration_summary_indices,
+        }
     
     # 1. Generate Synthetic "Observed" Data from Truth
     print(f"Generating synthetic observed data from truth: {dict(zip(PARAMETER_NAMES, TRUE_PARAMS))}")
@@ -58,7 +68,7 @@ def run_recovery_sl_mcmc():
     
     with mp.Pool(n_workers, initializer=init_worker, initargs=(sim_context, calibration)) as pool:
         curr_p = np.array([0.2, 0.1, 0.3]) # Starting point
-        curr_L = log_synthetic_likelihood(curr_p, obs_s, pool, rng)
+        curr_L, _ = log_synthetic_likelihood(curr_p, obs_s, pool, rng)
         
         chain = np.zeros((N_iter_recovery, 3))
         prop_sd = np.array([0.02, 0.01, 0.05])
@@ -71,7 +81,7 @@ def run_recovery_sl_mcmc():
             
             prop_p = curr_p + rng.normal(0, prop_sd)
             if np.all(prop_p >= PRIOR_LOWER) and np.all(prop_p <= PRIOR_UPPER):
-                prop_L = log_synthetic_likelihood(prop_p, obs_s, pool, rng)
+                prop_L, _ = log_synthetic_likelihood(prop_p, obs_s, pool, rng)
                 if rng.random() < np.exp(prop_L - curr_L):
                     curr_p, curr_L = prop_p, prop_L
                     acc_count += 1
