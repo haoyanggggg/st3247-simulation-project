@@ -213,5 +213,3 @@ py approximate_posterior_exploration.py
 The main report source is:
 
 - `abc_report_final_draft.tex`
-
-It now references the stable non-timestamped output filenames listed above.
